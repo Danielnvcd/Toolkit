@@ -8,7 +8,7 @@
   "jobs": [
     {
       "ring": "0-lab",
-      "modules": ["location", "apps", "network"],
+      "modules": ["location", "apps", "network", "users"],
       "apps": []
     },
     {

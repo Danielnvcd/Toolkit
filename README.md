@@ -1,6 +1,6 @@
 # Toolkit Call Center
 
-Herramienta de configuración para una flota de 400 PCs de call center: activa la ubicación de Windows (servicio + políticas + todos los perfiles), instala el stack de aplicaciones corporativas y diagnostica la red.
+Herramienta de configuración para una flota de 400 PCs de call center: activa la ubicación de Windows (servicio + políticas + todos los perfiles, **sin reiniciar el equipo**), instala el stack de aplicaciones corporativas, diagnostica la red y gestiona las cuentas de usuario locales.
 
 **El entregable es un único `Toolkit.exe` firmado, sin dependencias, con los scripts dentro.**
 
@@ -15,6 +15,7 @@ Toolkit.exe                       el envase (C#)
          Toolkit.Location.psm1    modulo A
          Toolkit.Apps.psm1        modulo B
          Toolkit.Network.psm1     modulo C
+         Toolkit.Users.psm1       modulo D (usuarios locales)
          Invoke-ToolkitRun.ps1    orquestador
          catalog.json
 ```
@@ -50,10 +51,32 @@ Toolkit.exe /report                    # auditoria: NO modifica nada  <- empieza
 Toolkit.exe /silent /all               # desatendido: aplica todo
 Toolkit.exe /silent /modules:location,network
 Toolkit.exe /silent /apps:netextender,goto
+Toolkit.exe /report /modules:users        # inventario de cuentas locales
 Toolkit.exe /rollback                  # revierte los cambios de registro
 Toolkit.exe /install-agent /share:\\SRV-FILE\Toolkit$ /ring:1-piloto
 Toolkit.exe /uninstall-agent
 ```
+
+### Ubicación: por qué no hace falta reiniciar
+
+`lfsvc` (el servicio de geolocalización) lee el interruptor maestro y el consentimiento **solo al arrancar**. Escribir el registro y no reiniciar el servicio es la causa de que "se active pero no funciona hasta reiniciar la PC". El módulo, tras aplicar las cuatro capas, **reinicia `lfsvc`** y después consulta la API de geolocalización para confirmar que responde. No se reinicia el equipo ni se cierra ninguna sesión.
+
+Por cada perfil de usuario (con sesión abierta, con la colmena descargada, y el perfil `Default` para usuarios futuros) se escriben dos consentimientos: el general y el de **apps de escritorio** (`NonPackaged`), que es el que necesitan el softphone y el CRM.
+
+### Usuarios locales
+
+La pestaña **Usuarios** de la interfaz (y la opción `U` del menú de `Toolkit.ps1`) permite:
+
+| Acción | Detalle |
+|---|---|
+| Listar | estado, si es administrador, si requiere contraseña, último inicio, sesión abierta, carpeta de perfil |
+| Cambiar contraseña | vuelve a marcar la cuenta como "contraseña requerida" |
+| Quitar contraseña | inicio de sesión directo; Windows sólo lo permite en consola local, no por red ni RDP |
+| Habilitar / deshabilitar | |
+| Eliminar | con o sin la carpeta `C:\Users\<nombre>` |
+| Crear | con o sin contraseña, opcionalmente administrador local |
+
+Protecciones: no se puede eliminar una cuenta integrada de Windows, la cuenta que está ejecutando el toolkit ni una cuenta con sesión abierta. Estas acciones **no** pasan por `rollback.json` (no son reversibles) y se registran en el log sin la contraseña. En el despliegue desatendido (`/silent`) el módulo `users` sólo inventaría; nunca modifica cuentas.
 
 ### Códigos de salida
 

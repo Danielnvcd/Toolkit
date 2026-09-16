@@ -41,6 +41,7 @@
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Location.psm1" LogicalName="Scripts/Toolkit.Location.psm1" />
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Apps.psm1"     LogicalName="Scripts/Toolkit.Apps.psm1" />
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Network.psm1"  LogicalName="Scripts/Toolkit.Network.psm1" />
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Users.psm1"    LogicalName="Scripts/Toolkit.Users.psm1" />
     <EmbeddedResource Include="..\..\scripts\Invoke-ToolkitRun.ps1"         LogicalName="Scripts/Invoke-ToolkitRun.ps1" />
     <EmbeddedResource Include="..\..\scripts\config\catalog.json"           LogicalName="Scripts/catalog.json" />
   </ItemGroup>

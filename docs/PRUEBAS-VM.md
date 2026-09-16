@@ -84,8 +84,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\Toolkit.ps1 -Modules locat
 
 - [ ] Servicio `lfsvc` queda en `Automatic` y `Running`
 - [ ] Las cuatro capas se aplican (mirar las líneas `+` del log)
-- [ ] Se escribe el consentimiento en el perfil de `labagente`
+- [ ] Se escribe el consentimiento en el perfil de `labagente` (general **y** `NonPackaged`)
 - [ ] Se escribe el perfil `Default`
+- [ ] Aparece la línea `lfsvc reiniciado: la ubicacion queda activa sin reiniciar el equipo`
+- [ ] La verificación contra la API devuelve `Ready` o `Initializing` (**no** `Disabled`) — sin haber reiniciado la VM
 - [ ] Se crea `C:\ProgramData\Toolkit\rollback.json`
 
 **Verificación manual** (no te fíes solo del log):
@@ -98,6 +100,8 @@ Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy' -Name Le
 ```
 
 Y en la interfaz: *Configuración → Privacidad y seguridad → Ubicación*. Con `lockDown` activo debe aparecer **"Algunas configuraciones las administra tu organización"** y el conmutador bloqueado. Si se puede desactivar a mano, la política no está surtiendo efecto.
+
+**Sin reiniciar la VM**, abrir la app *Mapas* (o `Get-Location` en Edge / cualquier web con geolocalización) y comprobar que obtiene posición. Si sólo funciona tras reiniciar, el reinicio de `lfsvc` no está surtiendo efecto y hay que revisar `Restart-LocationService`.
 
 ### A3 · Idempotencia — el caso que más se salta
 
@@ -112,11 +116,25 @@ Si la segunda pasada vuelve a aplicar cambios, hay un fallo de comparación en `
 
 ### A4 · Verificación con usuario estándar
 
-Cerrar sesión, entrar como `labagente`.
+Cerrar sesión, entrar como `labagente`. **No reiniciar la VM entre A2 y este paso**: precisamente lo que se valida es que aplica en caliente.
 
 - [ ] La ubicación aparece activada
 - [ ] El usuario **no** puede desactivarla (con `lockDown`)
+- [ ] En *Configuración → Ubicación*, "Permitir que las aplicaciones de escritorio accedan a tu ubicación" está activado
 - [ ] Una app de escritorio que use ubicación la obtiene (ver §6 sobre la limitación de la VM)
+
+### A4b · Usuarios locales (menú `U` de `Toolkit.ps1`)
+
+Volver a sesión `labadmin`. Ejecutar `Toolkit.ps1` sin parámetros y entrar en la opción `U`.
+
+- [ ] Lista `labadmin` (admin, sesión ABIERTA), `labagente` (sin sesión, con perfil) y las cuentas integradas en gris
+- [ ] Crear `labtemp` sin contraseña → aparece con `SIN contrasena`; cerrar sesión e iniciar con `labtemp` **sin que pida contraseña**
+- [ ] Cambiar la contraseña de `labtemp` → vuelve a `requerida`; iniciar sesión con la nueva contraseña funciona
+- [ ] Deshabilitar `labtemp` → no aparece en la pantalla de inicio de sesión; habilitar → vuelve
+- [ ] Intentar eliminar `labadmin` (la cuenta actual) → se rechaza con mensaje claro
+- [ ] Intentar eliminar `Administrador` → se rechaza (cuenta integrada)
+- [ ] Eliminar `labtemp` **con** perfil → desaparece `C:\Users\labtemp` y la cuenta
+- [ ] Ninguna contraseña aparece en `C:\ProgramData\Toolkit\logs\*.log`
 
 ### A5 · Reversión
 
@@ -206,6 +224,9 @@ Doble clic en `Toolkit.exe`.
 - [ ] El log se pinta **en vivo y con colores** (no todo al final)
 - [ ] La ventana no se congela durante la ejecución
 - [ ] *Revertir* pide confirmación y funciona
+- [ ] Pestaña **Usuarios**: la lista se carga sola al entrar y muestra lo mismo que el menú `U` de A4b
+- [ ] Los botones se activan/desactivan según la fila: *Eliminar* deshabilitado para la cuenta actual, las integradas y las que tienen sesión abierta; *Quitar contraseña* deshabilitado si ya no tiene
+- [ ] *Nuevo usuario*, *Cambiar contraseña* y *Eliminar* piden confirmación y el resultado aparece en la barra de estado y en el log
 
 ### B4 · Catálogo externo
 

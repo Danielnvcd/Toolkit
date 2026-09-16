@@ -24,7 +24,7 @@
 param(
     [switch]$Silent,
     [switch]$All,
-    [ValidateSet('location', 'apps', 'network')][string[]]$Modules,
+    [ValidateSet('location', 'apps', 'network', 'users')][string[]]$Modules,
     [string[]]$Apps,
     [switch]$Report,
     [switch]$NoLockDown,
@@ -40,7 +40,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ---------------------------------------------------------------------------
 #  Carga de modulos
 # ---------------------------------------------------------------------------
-foreach ($m in @('Toolkit.Core', 'Toolkit.Location', 'Toolkit.Apps', 'Toolkit.Network')) {
+foreach ($m in @('Toolkit.Core', 'Toolkit.Location', 'Toolkit.Apps', 'Toolkit.Network', 'Toolkit.Users')) {
     $path = Join-Path $here "modules\$m.psm1"
     if (-not (Test-Path -LiteralPath $path)) {
         Write-Host "ERROR: falta el modulo $path" -ForegroundColor Red
@@ -132,17 +132,20 @@ function Show-Menu {
         Write-Host '    6) Instalar aplicaciones del catalogo'
         Write-Host '    7) EJECUTAR TODO'
         Write-Host ''
+        Write-Host '   --- USUARIOS LOCALES ---' -ForegroundColor Gray
+        Write-Host '    U) Gestionar usuarios (listar, contrasena, eliminar, crear...)'
+        Write-Host ''
         Write-Host '   --- MANTENIMIENTO ---' -ForegroundColor Gray
         Write-Host '    8) Revertir cambios de registro (rollback)'
         Write-Host '    9) Abrir carpeta de logs'
         Write-Host '    0) Salir'
         Write-Host ''
 
-        switch (Read-Host '   Opcion') {
+        switch ((Read-Host '   Opcion').Trim().ToUpper()) {
             '1' { Show-LocationState -State (Test-LocationState); Wait-Key }
             '2' { Show-AppInventory  -Catalog $config;            Wait-Key }
             '3' { Invoke-Run -Mods @('network')                    | Out-Null; Wait-Key }
-            '4' { Invoke-Run -Mods @('location','apps','network') -AsReport | Out-Null; Wait-Key }
+            '4' { Invoke-Run -Mods @('location','apps','network','users') -AsReport | Out-Null; Wait-Key }
             '5' { Invoke-Run -Mods @('location')                   | Out-Null; Wait-Key }
             '6' { Invoke-Run -Mods @('apps')                       | Out-Null; Wait-Key }
             '7' { Invoke-Run -Mods @('location','apps','network')  | Out-Null; Wait-Key }
@@ -156,9 +159,89 @@ function Show-Menu {
                 Wait-Key
             }
             '9' { Start-Process (Join-Path $Root 'logs') }
+            'U' { Show-UsersMenu }
             '0' { return }
         }
     }
+}
+
+function Show-UsersMenu {
+    # Las acciones sobre cuentas no pasan por el orquestador ni por rollback.json:
+    # solo se registran en el log. Initialize-Toolkit abre ese log.
+    Initialize-Toolkit -Root $Root
+
+    while ($true) {
+        Clear-Host
+        Write-Host ''
+        Write-Host '  ############################################################' -ForegroundColor Cyan
+        Write-Host '  #  USUARIOS LOCALES                                        #' -ForegroundColor Cyan
+        Write-Host '  ############################################################' -ForegroundColor Cyan
+        Show-LocalUserInventory -Users (Get-LocalUserInventory)
+        Write-Host '    1) Cambiar contrasena'
+        Write-Host '    2) Dejar SIN contrasena'
+        Write-Host '    3) Habilitar cuenta'
+        Write-Host '    4) Deshabilitar cuenta'
+        Write-Host '    5) Eliminar cuenta'
+        Write-Host '    6) Crear cuenta'
+        Write-Host '    0) Volver'
+        Write-Host ''
+
+        $r = $null
+        switch ((Read-Host '   Opcion').Trim()) {
+            '1' {
+                $n = Read-Host '   Usuario'
+                $p1 = Read-Host '   Nueva contrasena' -AsSecureString
+                $p2 = Read-Host '   Repetir contrasena' -AsSecureString
+                $s1 = ConvertFrom-SecureStringPlain $p1
+                $s2 = ConvertFrom-SecureStringPlain $p2
+                if ($s1 -ne $s2) { Write-Host '   Las contrasenas no coinciden.' -ForegroundColor Red }
+                else { $r = Set-LocalUserPassword -Name $n -Password $s1 }
+            }
+            '2' {
+                $n = Read-Host '   Usuario'
+                if ((Read-Host "   Dejar a '$n' sin contrasena. Escribe SI para confirmar") -eq 'SI') { $r = Clear-LocalUserPassword -Name $n }
+            }
+            '3' { $r = Enable-LocalUserAccount  -Name (Read-Host '   Usuario') }
+            '4' { $r = Disable-LocalUserAccount -Name (Read-Host '   Usuario') }
+            '5' {
+                $n = Read-Host '   Usuario'
+                $prof = ((Read-Host '   Eliminar tambien su carpeta de perfil? (s/N)').Trim().ToLower() -eq 's')
+                if ((Read-Host "   ELIMINAR la cuenta '$n' (irreversible). Escribe SI para confirmar") -eq 'SI') {
+                    $r = Remove-LocalUserAccount -Name $n -RemoveProfile:$prof
+                }
+            }
+            '6' {
+                $n  = Read-Host '   Nombre de usuario'
+                $fn = Read-Host '   Nombre completo (opcional)'
+                $noPwd = ((Read-Host '   Sin contrasena? (s/N)').Trim().ToLower() -eq 's')
+                $adm   = ((Read-Host '   Administrador? (s/N)').Trim().ToLower() -eq 's')
+                $pwd = ''
+                $ok  = $true
+                if (-not $noPwd) {
+                    $s1 = ConvertFrom-SecureStringPlain (Read-Host '   Contrasena' -AsSecureString)
+                    $s2 = ConvertFrom-SecureStringPlain (Read-Host '   Repetir contrasena' -AsSecureString)
+                    if ($s1 -ne $s2) { Write-Host '   Las contrasenas no coinciden.' -ForegroundColor Red; $ok = $false }
+                    $pwd = $s1
+                }
+                if ($ok) { $r = New-LocalUserAccount -Name $n -Password $pwd -FullName $fn -NoPassword:$noPwd -Administrator:$adm }
+            }
+            '0' { return }
+        }
+
+        if ($r) {
+            Write-Host ''
+            Write-Host ("   {0}" -f $r.Message) -ForegroundColor $(if ($r.Success) { 'Green' } else { 'Red' })
+        }
+        Wait-Key
+    }
+}
+
+function ConvertFrom-SecureStringPlain {
+    param([Security.SecureString]$Secure)
+    if (-not $Secure) { return '' }
+    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
 }
 
 function Wait-Key {
@@ -171,9 +254,9 @@ function Wait-Key {
 #  Principal
 # ---------------------------------------------------------------------------
 $selected = @()
-if     ($All)     { $selected = @('location', 'apps', 'network') }
+if     ($All)     { $selected = @('location', 'apps', 'network', 'users') }
 elseif ($Modules) { $selected = $Modules }
-elseif ($Report)  { $selected = @('location', 'apps', 'network') }
+elseif ($Report)  { $selected = @('location', 'apps', 'network', 'users') }
 
 if ($selected.Count -eq 0 -and -not $Silent) {
     Show-Menu

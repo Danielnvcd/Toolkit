@@ -22,7 +22,8 @@ namespace Toolkit.App
             "Toolkit.Core",
             "Toolkit.Location",
             "Toolkit.Apps",
-            "Toolkit.Network"
+            "Toolkit.Network",
+            "Toolkit.Users"
         };
 
         private const string Prefix = "Scripts/";

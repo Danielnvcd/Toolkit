@@ -7,6 +7,10 @@
       2. Interruptor maestro: lfsvc\Service\Configuration\Status = 1
       3. ConsentStore: HKLM + HKLM\NonPackaged (apps de escritorio) + cada HKU
       4. Politicas: LocationAndSensors + AppPrivacy (impiden que el usuario lo revierta)
+
+    SIN REINICIAR EL EQUIPO: lfsvc lee Status y el consentimiento al arrancar y NO
+    los relee. Por eso, tras escribir el registro, se reinicia el servicio
+    (Restart-LocationService). Es lo que evita tener que reiniciar la PC.
 #>
 
 # Dependencia de Toolkit.Core (Write-Log, Set-RegValue, Add-Result, Test-ReportOnly...).
@@ -24,6 +28,8 @@ $script:RegPolLocation   = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\LocationAn
 $script:RegPolAppPrivacy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy'
 $script:RegProfileList   = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList'
 $script:UserConsentSub   = 'SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location'
+# Clave heredada (Windows 10 < 1809). Inofensiva en builds modernos; cubre equipos sin actualizar.
+$script:RegSensorLegacy  = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Sensor\Overrides\{BFA794E4-F964-4FDB-90F6-51056BFE4B44}'
 
 #region ---------- Diagnostico ----------
 
@@ -87,6 +93,8 @@ function Test-LocationState {
     foreach ($u in $state.UserProfiles) {
         if ($u.Consent -ne 'Allow') {
             $state.Issues += ("Usuario {0} sin consentimiento de ubicacion ({1})" -f $u.Account, $u.Consent)
+        } elseif ($u.ConsentDesktop -ne 'Allow') {
+            $state.Issues += ("Usuario {0} sin consentimiento para apps de escritorio ({1})" -f $u.Account, $u.ConsentDesktop)
         }
     }
 
@@ -95,7 +103,11 @@ function Test-LocationState {
 }
 
 function Get-UserLocationConsent {
-    <# Lee el consentimiento de cada perfil de usuario real del equipo. Solo lectura. #>
+    <#
+        Lee el consentimiento de cada perfil de usuario real del equipo. Solo lectura.
+        Las colmenas descargadas (usuarios sin sesion) se cargan temporalmente para
+        poder leerlas: si no, la auditoria no puede decir si estan bien o mal.
+    #>
     [CmdletBinding()]
     param()
 
@@ -118,19 +130,35 @@ function Get-UserLocationConsent {
             $account = (New-Object Security.Principal.SecurityIdentifier($sid)).Translate([Security.Principal.NTAccount]).Value
         } catch { if ($path) { $account = Split-Path $path -Leaf } }
 
-        $loaded  = Test-Path -LiteralPath "HKU:\$sid"
-        $consent = '<colmena descargada>'
-        if ($loaded) {
-            $v = Get-RegValue -Path "HKU:\$sid\$($script:UserConsentSub)" -Name 'Value'
-            $consent = if ($null -eq $v) { '<ausente>' } else { $v }
+        $loaded      = Test-Path -LiteralPath "HKU:\$sid"
+        $consent     = '<colmena descargada>'
+        $consentDesk = '<colmena descargada>'
+        $tempLoaded  = $false
+
+        if (-not $loaded -and $path) {
+            $dat = Join-Path $path 'NTUSER.DAT'
+            if (Test-Path -LiteralPath $dat) {
+                $null = & reg.exe load "HKU\$sid" "$dat" 2>&1
+                if ($LASTEXITCODE -eq 0) { $tempLoaded = $true }
+            }
         }
 
+        if ($loaded -or $tempLoaded) {
+            $v = Get-RegValue -Path "HKU:\$sid\$($script:UserConsentSub)" -Name 'Value'
+            $consent = if ($null -eq $v) { '<ausente>' } else { $v }
+            $d = Get-RegValue -Path "HKU:\$sid\$($script:UserConsentSub)\NonPackaged" -Name 'Value'
+            $consentDesk = if ($null -eq $d) { '<ausente>' } else { $d }
+        }
+
+        if ($tempLoaded) { Dismount-UserHive -Key "HKU\$sid" }
+
         $out += [pscustomobject]@{
-            Sid         = $sid
-            Account     = $account
-            ProfilePath = $path
-            HiveLoaded  = $loaded
-            Consent     = $consent
+            Sid            = $sid
+            Account        = $account
+            ProfilePath    = $path
+            HiveLoaded     = $loaded
+            Consent        = $consent
+            ConsentDesktop = $consentDesk
         }
     }
     return $out
@@ -212,6 +240,8 @@ function Enable-LocationService {
     # ---- Capa 2: interruptor maestro ----
     Write-Log 'Capa 2/4 - interruptor maestro del sistema' -Level INFO
     if (Set-RegValue -Path $script:RegLfsvcConfig -Name 'Status' -Value 1 -Type DWord) { $changed++ }
+    # Clave heredada: en Windows 10 anteriores a 1809 es la que manda.
+    if (Set-RegValue -Path $script:RegSensorLegacy -Name 'SensorPermissionState' -Value 1 -Type DWord) { $changed++ }
 
     # ---- Capa 3: ConsentStore de maquina ----
     Write-Log 'Capa 3/4 - almacen de consentimiento (maquina)' -Level INFO
@@ -240,6 +270,14 @@ function Enable-LocationService {
         $changed += Set-AllUserLocationConsent
     }
 
+    # ---- Aplicar en caliente ----
+    # lfsvc solo lee Status y el consentimiento al arrancar. Si se cambio algo,
+    # se reinicia el servicio para que surta efecto YA, sin reiniciar el equipo.
+    if ($changed -gt 0 -and -not (Test-ReportOnly)) {
+        Write-Log 'Aplicando en caliente - reinicio del servicio lfsvc (sin reiniciar el equipo)' -Level INFO
+        Restart-LocationService | Out-Null
+    }
+
     if ($changed -gt 0) {
         Add-Result -Module 'Location' -Task 'Activar ubicacion' -Status $(if (Test-ReportOnly) { 'AVISO' } else { 'CAMBIADO' }) `
                    -Message ("{0} ajuste(s) {1}" -f $changed, $(if (Test-ReportOnly) { 'pendientes' } else { 'aplicados' }))
@@ -248,6 +286,37 @@ function Enable-LocationService {
     }
 
     return $changed
+}
+
+function Restart-LocationService {
+    <#
+        Reinicia lfsvc para que relea la configuracion. Es lo que hace innecesario
+        reiniciar el equipo. Devuelve $true si el servicio queda en ejecucion.
+    #>
+    [CmdletBinding()]
+    param([int]$TimeoutSeconds = 20)
+
+    if (Test-ReportOnly) { return $false }
+
+    $svc = Get-Service -Name 'lfsvc' -ErrorAction SilentlyContinue
+    if (-not $svc) { return $false }
+
+    try {
+        if ($svc.Status -ne 'Stopped') {
+            Stop-Service -Name 'lfsvc' -Force -ErrorAction Stop
+            $svc.WaitForStatus('Stopped', [TimeSpan]::FromSeconds($TimeoutSeconds))
+        }
+        Start-Service -Name 'lfsvc' -ErrorAction Stop
+        $svc.WaitForStatus('Running', [TimeSpan]::FromSeconds($TimeoutSeconds))
+        Write-Log '  + lfsvc reiniciado: la ubicacion queda activa sin reiniciar el equipo' -Level OK
+        return $true
+    } catch {
+        Write-Log "  ! No se pudo reiniciar lfsvc en caliente: $($_.Exception.Message)" -Level WARN
+        Write-Log '    La configuracion esta escrita; se aplicara en el proximo arranque.' -Level WARN
+        try { Start-Service -Name 'lfsvc' -ErrorAction SilentlyContinue } catch { }
+        $svc.Refresh()
+        return ($svc.Status -eq 'Running')
+    }
 }
 
 function Set-AllUserLocationConsent {
@@ -298,20 +367,11 @@ function Set-AllUserLocationConsent {
         }
 
         try {
-            if (Set-RegValue -Path "HKU:\$sid\$($script:UserConsentSub)" -Name 'Value' -Value 'Allow' -Type String) { $changed++ }
+            $changed += Set-UserHiveConsent -HiveRoot "HKU:\$sid"
         } catch {
             Write-Log "  x Fallo escribiendo consentimiento de $sid : $($_.Exception.Message)" -Level ERROR
         } finally {
-            if ($needsUnload) {
-                # CRITICO: liberar handles antes de descargar, o reg unload falla y deja la colmena colgada.
-                [GC]::Collect()
-                [GC]::WaitForPendingFinalizers()
-                Start-Sleep -Milliseconds 300
-                $null = & reg.exe unload "HKU\$sid" 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    Write-Log "  ! No se pudo descargar la colmena HKU\$sid -- revisar manualmente" -Level WARN
-                }
-            }
+            if ($needsUnload) { Dismount-UserHive -Key "HKU\$sid" }
         }
     }
 
@@ -342,17 +402,12 @@ function Set-DefaultProfileConsent {
 
     try {
         Ensure-HKUDrive
-        if (Set-RegValue -Path "HKU:\$tempKey\$($script:UserConsentSub)" -Name 'Value' -Value 'Allow' -Type String) {
-            $changed++
-            Write-Log '  + Perfil Default configurado (aplica a usuarios futuros)' -Level OK
-        }
+        $changed = Set-UserHiveConsent -HiveRoot "HKU:\$tempKey"
+        if ($changed -gt 0) { Write-Log '  + Perfil Default configurado (aplica a usuarios futuros)' -Level OK }
     } catch {
         Write-Log "  x Fallo en el perfil Default: $($_.Exception.Message)" -Level ERROR
     } finally {
-        [GC]::Collect()
-        [GC]::WaitForPendingFinalizers()
-        Start-Sleep -Milliseconds 300
-        $null = & reg.exe unload "HKU\$tempKey" 2>&1
+        Dismount-UserHive -Key "HKU\$tempKey"
     }
     return $changed
 }
@@ -437,8 +492,9 @@ function Show-LocationState {
     Write-Host ''
     Write-Host '    Perfiles de usuario:' -ForegroundColor Gray
     foreach ($u in $State.UserProfiles) {
-        $c = if ($u.Consent -eq 'Allow') { 'Green' } else { 'Yellow' }
-        Write-Host ('      {0,-30} {1}' -f $u.Account, $u.Consent) -ForegroundColor $c
+        $ok = ($u.Consent -eq 'Allow' -and $u.ConsentDesktop -eq 'Allow')
+        $c  = if ($ok) { 'Green' } else { 'Yellow' }
+        Write-Host ('      {0,-30} {1,-8} escritorio: {2}' -f $u.Account, $u.Consent, $u.ConsentDesktop) -ForegroundColor $c
     }
     Write-Host ''
     if ($State.Compliant) {
@@ -460,10 +516,36 @@ function Ensure-HKUDrive {
     }
 }
 
+function Set-UserHiveConsent {
+    <#
+        Escribe el consentimiento de ubicacion en una colmena de usuario ya montada.
+        Dos valores: el general (apps de la tienda) y NonPackaged (apps de escritorio:
+        softphone, CRM...). Sin el segundo, el usuario ve la ubicacion "activada"
+        pero las apps clasicas no la reciben. Devuelve cuantos valores cambiaron.
+    #>
+    param([Parameter(Mandatory)][string]$HiveRoot)
+    $n = 0
+    if (Set-RegValue -Path "$HiveRoot\$($script:UserConsentSub)"             -Name 'Value' -Value 'Allow' -Type String) { $n++ }
+    if (Set-RegValue -Path "$HiveRoot\$($script:UserConsentSub)\NonPackaged" -Name 'Value' -Value 'Allow' -Type String) { $n++ }
+    return $n
+}
+
+function Dismount-UserHive {
+    <# CRITICO: liberar handles antes de descargar, o reg unload falla y deja la colmena colgada. #>
+    param([Parameter(Mandatory)][string]$Key)
+    [GC]::Collect()
+    [GC]::WaitForPendingFinalizers()
+    Start-Sleep -Milliseconds 300
+    $null = & reg.exe unload "$Key" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Log "  ! No se pudo descargar la colmena $Key -- revisar manualmente" -Level WARN
+    }
+}
+
 #endregion
 
 Export-ModuleMember -Function @(
     'Test-LocationState', 'Get-UserLocationConsent',
     'Enable-LocationService', 'Set-AllUserLocationConsent', 'Set-DefaultProfileConsent',
-    'Test-LocationApi', 'Show-LocationState'
+    'Restart-LocationService', 'Test-LocationApi', 'Show-LocationState'
 )

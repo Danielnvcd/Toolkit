@@ -28,9 +28,10 @@ Lo que ya está escrito y lo que falta. **Nada de esto se ha podido ejecutar tod
 | Pieza | Estado | Archivo |
 |---|---|---|
 | Motor común (log, registro con reversión, mutex, resultados, reportes) | Escrito | `scripts/modules/Toolkit.Core.psm1` |
-| Módulo A — Ubicación (4 capas + perfiles de usuario + verificación por API) | Escrito | `scripts/modules/Toolkit.Location.psm1` |
+| Módulo A — Ubicación (4 capas + perfiles de usuario + reinicio de `lfsvc` en caliente + verificación por API) | Escrito | `scripts/modules/Toolkit.Location.psm1` |
 | Módulo B — Aplicaciones (catálogo, hash, mutex MSI, reintentos, verificación) | Escrito | `scripts/modules/Toolkit.Apps.psm1` |
 | Módulo C — Red (latencia, jitter, pérdida, DNS, MTU, TLS, proxy) | Escrito | `scripts/modules/Toolkit.Network.psm1` |
+| Módulo D — Usuarios locales (inventario, contraseña, sin contraseña, habilitar, eliminar, crear) | Escrito | `scripts/modules/Toolkit.Users.psm1` |
 | Orquestador (fuente única de la lógica) | Escrito | `scripts/Invoke-ToolkitRun.ps1` |
 | Host C# con scripts embebidos + interfaz + CLI + agente | Escrito | `src/Toolkit.App/` |
 | Generador de fichas de aplicación | Escrito | `scripts/tools/New-AppFicha.ps1` |
@@ -151,6 +152,7 @@ La implementación está en `src/Toolkit.App/ScriptHost.cs`: cada `.psm1` se car
       Scripts/Toolkit.Location.psm1   MODULO A  ubicacion
       Scripts/Toolkit.Apps.psm1       MODULO B  aplicaciones
       Scripts/Toolkit.Network.psm1    MODULO C  red
+      Scripts/Toolkit.Users.psm1      MODULO D  usuarios locales
       Scripts/Invoke-ToolkitRun.ps1   ORQUESTADOR (fuente unica de la logica)
       Scripts/catalog.json            catalogo por defecto
 ```
@@ -226,7 +228,8 @@ Toolkit/
 │   │   ├── Toolkit.Core.psm1         #   log, registro+reversion, mutex, resultados
 │   │   ├── Toolkit.Location.psm1     #   MODULO A
 │   │   ├── Toolkit.Apps.psm1         #   MODULO B
-│   │   └── Toolkit.Network.psm1      #   MODULO C
+│   │   ├── Toolkit.Network.psm1      #   MODULO C
+│   │   └── Toolkit.Users.psm1        #   MODULO D  (acciones solo desde GUI / menu; en /silent solo inventaria)
 │   ├── config/catalog.json           #   catalogo de apps y destinos de red
 │   ├── tools/
 │   │   └── New-AppFicha.ps1          #   genera la ficha de una app desde su instalador

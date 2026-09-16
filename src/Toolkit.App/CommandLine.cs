@@ -27,7 +27,7 @@ namespace Toolkit.App
 
     internal static class CommandLine
     {
-        private static readonly string[] ValidModules = { "location", "apps", "network" };
+        private static readonly string[] ValidModules = { "location", "apps", "network", "users" };
 
         public static CommandLineArgs Parse(string[] argv)
         {
@@ -124,7 +124,9 @@ Un solo ejecutable. Los scripts van dentro.
   Toolkit.exe /uninstall-agent
 
 OPCIONES
-  /modules:<lista>   location | apps | network   (separadas por coma)
+  /modules:<lista>   location | apps | network | users   (separadas por coma)
+                     'users' solo inventaria las cuentas locales; las acciones
+                     (contrasena, eliminar, crear) estan en la interfaz grafica
   /apps:<lista>      ids concretos del catalogo
   /share:<ruta>      share UNC para reportes, catalogo y paquetes
   /config:<ruta>     catalog.json alternativo (por defecto: el embebido)

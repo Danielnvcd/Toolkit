@@ -22,7 +22,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet('location', 'apps', 'network')][string[]]$Modules = @('location', 'apps', 'network'),
+    [ValidateSet('location', 'apps', 'network', 'users')][string[]]$Modules = @('location', 'apps', 'network', 'users'),
     [string[]]$Apps,
     [switch]$ReportOnly,
     [switch]$Silent,
@@ -143,6 +143,26 @@ function Invoke-ModuleNetwork {
 }
 
 # ---------------------------------------------------------------------------
+#  Modulo D - Usuarios locales (solo inventario)
+#  Las acciones (contrasena, eliminar, crear...) son interactivas: viven en la
+#  GUI y en el menu de Toolkit.ps1, nunca en el despliegue desatendido.
+# ---------------------------------------------------------------------------
+function Invoke-ModuleUsers {
+    Write-Step 'MODULO D - USUARIOS LOCALES (inventario)'
+
+    $users = @(Get-LocalUserInventory)
+    if (-not $Silent) { Show-LocalUserInventory -Users $users }
+
+    $active = @($users | Where-Object { $_.Enabled -and -not $_.BuiltIn })
+    $admins = @($active | Where-Object { $_.IsAdmin })
+    $noPwd  = @($active | Where-Object { -not $_.PasswordRequired })
+
+    Add-Result -Module 'Users' -Task 'Inventario' -Status 'OK' `
+               -Message ('{0} cuenta(s) activa(s), {1} admin, {2} sin contrasena' -f $active.Count, $admins.Count, $noPwd.Count) `
+               -Detail $users
+}
+
+# ---------------------------------------------------------------------------
 #  Flujo
 # ---------------------------------------------------------------------------
 $exitCode = 0
@@ -162,6 +182,7 @@ try {
     if ($selected -contains 'location') { Invoke-ModuleLocation }
     if ($selected -contains 'apps')     { Invoke-ModuleApps }
     if ($selected -contains 'network')  { Invoke-ModuleNetwork }
+    if ($selected -contains 'users')    { Invoke-ModuleUsers }
 
     Save-Report -SharePath $SharePath | Out-Null
     if (-not $Silent) { Show-Summary }

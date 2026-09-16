@@ -229,7 +229,7 @@ namespace Toolkit.App
 
     public sealed class RunOptions
     {
-        public string[] Modules { get; set; } = { "location", "apps", "network" };
+        public string[] Modules { get; set; } = { "location", "apps", "network", "users" };
         public string[] Apps { get; set; }
         public string CatalogJson { get; set; }
         public string SharePath { get; set; }
