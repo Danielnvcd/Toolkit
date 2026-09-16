@@ -20,6 +20,7 @@ namespace Toolkit.App
 
         public List<string> Modules { get; set; } = new List<string>();
         public List<string> Apps { get; set; } = new List<string>();
+        public List<string> Support { get; set; } = new List<string>();
 
         public string SharePath { get; set; }
         public string ConfigPath { get; set; }
@@ -69,6 +70,12 @@ namespace Toolkit.App
                         if (!a.Modules.Contains("apps")) a.Modules.Add("apps");
                         break;
 
+                    case "support":
+                        // /support:info,audio,report  (sin lista = todo lo de lectura + reporte)
+                        a.Support.AddRange(SplitList(value));
+                        if (a.Support.Count == 0) a.Support.AddRange(new[] { "info", "audio", "printers", "update", "time", "events", "procs", "report" });
+                        break;
+
                     case "report": case "audit":
                         a.ReportOnly = true;
                         if (a.Modules.Count == 0) a.Modules = ValidModules.ToList();
@@ -103,7 +110,7 @@ namespace Toolkit.App
             }
 
             // /silent sin modulos no haria nada util: se asume el conjunto completo.
-            if (a.Silent && a.Modules.Count == 0 && !a.Rollback && !a.InstallAgent && !a.UninstallAgent)
+            if (a.Silent && a.Modules.Count == 0 && a.Support.Count == 0 && !a.Rollback && !a.InstallAgent && !a.UninstallAgent)
                 a.Modules = ValidModules.ToList();
 
             return a;
@@ -128,8 +135,11 @@ Un solo ejecutable. Los scripts van dentro.
   Toolkit.exe /report                  Auditoria: evalua SIN modificar nada
   Toolkit.exe /checkin                 Comprueba si el check-in de Zoho con ubicacion
                                        funcionara en el navegador (no modifica nada)
+  Toolkit.exe /support                 Diagnostico de soporte completo + reporte para ticket
+  Toolkit.exe /support:audio,events    Solo esas acciones (info, audio, printers, update,
+                                       time, events, procs, report)
   Toolkit.exe /silent /modules:location,network
-  Toolkit.exe /silent /apps:netextender,goto
+  Toolkit.exe /silent /apps:genesys-cloud,krisp
   Toolkit.exe /rollback                Revierte los cambios de registro
   Toolkit.exe /install-agent /share:\\SRV-FILE\Toolkit$ /ring:1-piloto
   Toolkit.exe /uninstall-agent

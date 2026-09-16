@@ -833,6 +833,56 @@ function Test-CheckInReadiness {
     }
 }
 
+function Open-BrowserGeoTest {
+    <#
+        La prueba definitiva: una pagina local que pide la ubicacion con la misma
+        API que usa Zoho (navigator.geolocation) y muestra coordenadas, precision
+        y el error exacto si falla. Se abre en el navegador predeterminado.
+        Nota: como el toolkit va elevado, el navegador se abre con el perfil del
+        administrador, no el del agente; sirve para validar Windows + politica.
+    #>
+    [CmdletBinding()]
+    param([string]$Root = 'C:\ProgramData\Toolkit', [int]$MaxAccuracyMeters = 500)
+
+    $path = Join-Path $Root 'geo-test.html'
+    $html = @"
+<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Toolkit BPO - prueba de ubicacion</title>
+<style>body{font-family:Segoe UI,Arial;margin:40px;max-width:720px;color:#222}h1{font-size:20px}#out{padding:16px;border-radius:8px;background:#f3f3f3;white-space:pre-wrap;font-family:Consolas,monospace}
+.ok{background:#e3f6e8;border:1px solid #2e8b57}.bad{background:#fdecea;border:1px solid #c0392b}.warn{background:#fff6e0;border:1px solid #b8860b}small{color:#666}</style></head><body>
+<h1>Prueba de ubicacion en el navegador</h1>
+<p>Esta pagina pide la ubicacion exactamente igual que lo hace Zoho. Si aqui funciona, el check-in funciona.</p>
+<div id="out">Pidiendo ubicacion al navegador...</div>
+<p><small>Navegador: <span id="ua"></span></small></p>
+<script>
+document.getElementById('ua').textContent=navigator.userAgent;
+var out=document.getElementById('out');
+if(!navigator.geolocation){out.className='bad';out.textContent='Este navegador no soporta geolocalizacion.';}
+else{navigator.geolocation.getCurrentPosition(function(p){
+  var a=Math.round(p.coords.accuracy);var lim=$MaxAccuracyMeters;
+  out.className=(a<=lim)?'ok':'warn';
+  out.textContent='OK - el navegador entrega la ubicacion.\n\nLatitud : '+p.coords.latitude+'\nLongitud: '+p.coords.longitude+'\nPrecision: ~'+a+' m'+(a>lim?'  (por encima de '+lim+' m: con geovalla en Zoho puede fallar)':'')+'\nHora: '+new Date(p.timestamp).toLocaleString()+'\n\nVer en el mapa: https://www.google.com/maps?q='+p.coords.latitude+','+p.coords.longitude;
+},function(e){
+  var why={1:'PERMISSION_DENIED - el navegador o Windows deniegan la ubicacion (politica del navegador, permiso del sitio o ubicacion de Windows apagada).',2:'POSITION_UNAVAILABLE - Windows no devuelve posicion (servicio lfsvc parado, sin Wi-Fi ni acceso al servicio de posicionamiento).',3:'TIMEOUT - el navegador no obtuvo posicion a tiempo.'};
+  out.className='bad';out.textContent='FALLO (codigo '+e.code+')\n'+(why[e.code]||e.message)+'\n\nMensaje del navegador: '+e.message;
+},{enableHighAccuracy:true,timeout:25000,maximumAge:0});}
+</script></body></html>
+"@
+    New-Item -ItemType Directory -Path $Root -Force | Out-Null
+    [IO.File]::WriteAllText($path, $html, (New-Object Text.UTF8Encoding($false)))
+    Write-Log "  > Abriendo prueba de ubicacion en el navegador predeterminado: $path" -Level INFO
+    Write-Log '    (se abre con el perfil del administrador; valida Windows y la politica del navegador)' -Level DEBUG
+    Start-Process $path
+    return $path
+}
+
+function Open-LocationSettings {
+    <# Abre Configuracion > Privacidad > Ubicacion de Windows, para ver o fijar la ubicacion predeterminada. #>
+    [CmdletBinding()]
+    param()
+    Write-Log '  > Abriendo Configuracion > Privacidad > Ubicacion' -Level INFO
+    Start-Process 'ms-settings:privacy-location'
+}
+
 #endregion
 
 #region ---------- Interno ----------
@@ -875,5 +925,6 @@ Export-ModuleMember -Function @(
     'Test-LocationState', 'Get-UserLocationConsent',
     'Enable-LocationService', 'Set-AllUserLocationConsent', 'Set-DefaultProfileConsent',
     'Restart-LocationService', 'Test-LocationApi', 'Show-LocationState',
-    'Get-InstalledBrowsers', 'Test-BrowserGeolocation', 'Enable-BrowserGeolocation', 'Test-CheckInReadiness'
+    'Get-InstalledBrowsers', 'Test-BrowserGeolocation', 'Enable-BrowserGeolocation', 'Test-CheckInReadiness',
+    'Open-BrowserGeoTest', 'Open-LocationSettings'
 )

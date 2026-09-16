@@ -65,6 +65,7 @@ namespace Toolkit.App
                 if (args.InstallAgent)   return AgentInstaller.Install(args.SharePath, args.Ring);
                 if (args.UninstallAgent) return AgentInstaller.Uninstall();
                 if (args.Rollback)       return RunRollback(args);
+                if (args.Support.Count > 0) return RunSupport(args);
 
                 return RunModules(args);
             }
@@ -72,6 +73,57 @@ namespace Toolkit.App
             {
                 Console.Error.WriteLine("ERROR NO CONTROLADO: " + ex.Message);
                 return ExitGeneric;
+            }
+        }
+
+        // Acciones de la pestana Soporte disponibles por consola (/support:info,audio,...).
+        // Solo las de lectura y el reporte: las reparaciones se hacen con el tecnico delante.
+        internal static readonly Dictionary<string, string> SupportActions = new Dictionary<string, string>
+        {
+            { "info",     "Get-SupportSummary | Out-Null" },
+            { "audio",    "Test-AudioSetup | Out-Null" },
+            { "printers", "Get-PrinterReport | Out-Null" },
+            { "update",   "Get-UpdateStatus | Out-Null" },
+            { "time",     "Get-TimeStatus | Out-Null" },
+            { "events",   "Get-RecentErrors | Out-Null" },
+            { "procs",    "Get-TopProcesses | Out-Null" },
+            { "report",   "param($Root) Export-SupportReport -Root $Root | Out-Null" }
+        };
+
+        private static int RunSupport(CommandLineArgs args)
+        {
+            using (var host = new ScriptHost())
+            {
+                host.Output += (s, e) => WriteColored(e.Level, e.Text);
+                host.Open();
+                host.Invoke("param($Root) Initialize-Toolkit -Root $Root",
+                    new Dictionary<string, object> { { "Root", args.Root } });
+
+                var failed = false;
+                foreach (var action in args.Support)
+                {
+                    string script;
+                    if (!SupportActions.TryGetValue(action, out script))
+                    {
+                        Console.Error.WriteLine("Accion de soporte desconocida: " + action +
+                            ". Validas: " + string.Join(", ", SupportActions.Keys));
+                        failed = true;
+                        continue;
+                    }
+                    try
+                    {
+                        // Solo los scripts con param() aceptan argumentos; a los demas, ninguno.
+                        host.Invoke(script, script.StartsWith("param(")
+                            ? new Dictionary<string, object> { { "Root", args.Root } }
+                            : null);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine("ERROR en " + action + ": " + ex.Message);
+                        failed = true;
+                    }
+                }
+                return failed ? ExitGeneric : ExitOk;
             }
         }
 

@@ -98,7 +98,10 @@ function Get-SupportSummary {
     foreach ($d in $s.Discos) {
         Write-Log ($fmt -f "Disco $($d.Unidad)", "$($d.LibreGB) GB libres de $($d.TotalGB) GB ($($d.LibrePct) %)") -Level $(if ($d.LibrePct -lt 10) { 'WARN' } else { 'INFO' })
     }
-    Write-Log ($fmt -f 'Encendido', "$($s.Encendido)  (desde $($s.UltimoArranque))") -Level $(if ((Get-Date) - [datetime]$s.UltimoArranque -gt [timespan]::FromDays(14)) { 'WARN' } else { 'INFO' })
+    $longUptime = $false
+    if ($s.UltimoArranque) { try { $longUptime = ((Get-Date) - [datetime]$s.UltimoArranque) -gt [timespan]::FromDays(14) } catch { } }
+    Write-Log ($fmt -f 'Encendido', "$($s.Encendido)  (desde $($s.UltimoArranque))") -Level $(if ($longUptime) { 'WARN' } else { 'INFO' })
+    if ($longUptime) { Write-Log '  ! Mas de 14 dias sin reiniciar: muchos "va lento" y fallos de audio se arreglan reiniciando.' -Level WARN }
     Write-Log ($fmt -f 'Antivirus', $(if ($s.Antivirus.Count) { $s.Antivirus -join ', ' } else { 'ninguno registrado' })) -Level INFO
     if ($s.RAM_LibreGB -lt 1)  { Write-Log '  ! Menos de 1 GB de RAM libre: el equipo ira lento; cerrar programas o reiniciar.' -Level WARN }
     foreach ($d in $s.Discos) { if ($d.LibrePct -lt 10) { Write-Log "  ! Disco $($d.Unidad) con menos del 10 % libre: usar 'Limpiar temporales'." -Level WARN } }
@@ -263,9 +266,97 @@ function Get-TimeStatus {
     return [pscustomobject]@{ Hora = (Get-Date); ZonaHoraria = $tz; Fuente = $source; DesfaseSeg = $offset }
 }
 
+function Get-RecentErrors {
+    <#
+        Errores y fallos criticos del registro de eventos (Sistema y Aplicacion)
+        en las ultimas horas, agrupados por origen. Es donde se ve "por que se
+        reinicio solo", "por que se cerro el softphone" o un disco que falla.
+    #>
+    [CmdletBinding()]
+    param([int]$Hours = 24, [int]$Top = 15)
+
+    Write-Log ("EVENTOS DE ERROR (ultimas {0} h)" -f $Hours) -Level STEP
+    $since = (Get-Date).AddHours(-$Hours)
+    $events = @()
+    foreach ($log in 'System', 'Application') {
+        try {
+            $events += @(Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 1, 2; StartTime = $since } -ErrorAction Stop |
+                         Select-Object TimeCreated, LogName, ProviderName, Id, LevelDisplayName, Message)
+        } catch { }   # sin eventos = Get-WinEvent lanza excepcion; no es un error
+    }
+    if ($events.Count -eq 0) { Write-Log '  + Sin errores ni eventos criticos en el periodo' -Level OK; return @() }
+
+    # Apagados inesperados y reinicios: lo primero que hay que saber.
+    $unexpected = @($events | Where-Object { $_.Id -in 41, 6008, 1001 -and $_.ProviderName -match 'Kernel-Power|EventLog|BugCheck' })
+    foreach ($u in $unexpected) {
+        Write-Log ("  x {0:yyyy-MM-dd HH:mm}  APAGADO INESPERADO / PANTALLAZO ({1} {2})" -f $u.TimeCreated, $u.ProviderName, $u.Id) -Level ERROR
+    }
+    $disk = @($events | Where-Object { $_.ProviderName -match '^disk$|Ntfs|volmgr|storahci|stornvme' })
+    if ($disk.Count -gt 0) { Write-Log ("  x {0} evento(s) de DISCO/NTFS: revisar el disco (chkdsk, SMART) antes de nada" -f $disk.Count) -Level ERROR }
+
+    $groups = $events | Group-Object ProviderName, Id | Sort-Object Count -Descending | Select-Object -First $Top
+    Write-Log ("  {0} evento(s) en total; los {1} origenes mas repetidos:" -f $events.Count, $groups.Count) -Level INFO
+    foreach ($g in $groups) {
+        $e = $g.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1
+        $msg = if ($e.Message) { ($e.Message -split "`r?`n")[0] } else { '' }
+        if ($msg.Length -gt 90) { $msg = $msg.Substring(0, 90) + '...' }
+        Write-Log ("  {0,3}x  {1,-11} {2,-32} {3,6}  {4}" -f $g.Count, $e.LogName, $e.ProviderName, $e.Id, $msg) -Level $(if ($e.LevelDisplayName -match 'Cr') { 'ERROR' } else { 'WARN' })
+    }
+    return $events
+}
+
+function Get-TopProcesses {
+    <# Procesos que mas CPU y memoria consumen ahora mismo. Para el "va lento" con el agente al telefono. #>
+    [CmdletBinding()]
+    param([int]$Top = 10)
+
+    Write-Log 'PROCESOS QUE MAS CONSUMEN' -Level STEP
+    # CPU: dos muestras separadas 2 s (Get-Process solo da CPU acumulada).
+    $s1 = @{}; Get-Process | ForEach-Object { try { $s1[$_.Id] = $_.CPU } catch { } }
+    Start-Sleep -Seconds 2
+    $cores = [Environment]::ProcessorCount
+    $rows = @()
+    foreach ($p in Get-Process) {
+        $cpuPct = 0
+        try { if ($s1.ContainsKey($p.Id) -and $null -ne $p.CPU) { $cpuPct = [math]::Round(100 * ($p.CPU - $s1[$p.Id]) / 2 / $cores, 1) } } catch { }
+        $rows += [pscustomobject]@{ Proceso = $p.ProcessName; PID = $p.Id; CpuPct = [math]::Max(0, $cpuPct); MemMB = [math]::Round($p.WorkingSet64 / 1MB); Titulo = $p.MainWindowTitle }
+    }
+    Write-Log '  Por CPU:' -Level INFO
+    foreach ($r in ($rows | Sort-Object CpuPct -Descending | Select-Object -First $Top)) {
+        Write-Log ("    {0,5:N1} %  {1,7} MB  {2,-28} {3}" -f $r.CpuPct, $r.MemMB, $r.Proceso, $r.Titulo) -Level $(if ($r.CpuPct -gt 50) { 'WARN' } else { 'INFO' })
+    }
+    Write-Log '  Por memoria:' -Level INFO
+    foreach ($r in ($rows | Sort-Object MemMB -Descending | Select-Object -First $Top)) {
+        Write-Log ("    {0,7} MB  {1,5:N1} %  {2,-28} {3}" -f $r.MemMB, $r.CpuPct, $r.Proceso, $r.Titulo) -Level $(if ($r.MemMB -gt 2048) { 'WARN' } else { 'INFO' })
+    }
+    $total = ($rows | Measure-Object MemMB -Sum).Sum
+    Write-Log ("  {0} procesos, {1:N0} MB en uso" -f $rows.Count, $total) -Level INFO
+    return $rows | Sort-Object CpuPct -Descending
+}
+
 #endregion
 
 #region ---------- Reparaciones rapidas ----------
+
+function Restart-ComputerDelayed {
+    <#
+        Reinicio con aviso: el agente ve un mensaje de Windows con cuenta atras y
+        puede guardar. Se cancela con -Cancel (shutdown /a) mientras no haya vencido.
+    #>
+    [CmdletBinding()]
+    param([int]$Seconds = 60, [string]$Message = 'Toolkit BPO: el equipo se reiniciara por mantenimiento. Guarda tu trabajo.', [switch]$Cancel)
+
+    if ($Cancel) {
+        & shutdown.exe /a 2>&1 | Out-Null
+        Write-Log $(if ($LASTEXITCODE -eq 0) { '  + Reinicio cancelado' } else { '  = No habia ningun reinicio programado' }) -Level $(if ($LASTEXITCODE -eq 0) { 'OK' } else { 'INFO' })
+        return ($LASTEXITCODE -eq 0)
+    }
+    Write-Log ("REINICIAR EQUIPO en {0} s" -f $Seconds) -Level STEP
+    & shutdown.exe /r /t $Seconds /c "$Message" /d p:4:1 2>&1 | Out-Null
+    if ($LASTEXITCODE -eq 0) { Write-Log "  + Reinicio programado en $Seconds s. El usuario ve el aviso. Cancelar: shutdown /a" -Level OK; return $true }
+    Write-Log "  x shutdown devolvio $LASTEXITCODE (ya habia uno programado? usa 'cancelar' primero)" -Level ERROR
+    return $false
+}
 
 function Repair-Network {
     <#
@@ -558,6 +649,8 @@ function Export-SupportReport {
     & $add 'IMPRESORAS'      (Get-PrinterReport)
     & $add 'WINDOWS UPDATE'  (Get-UpdateStatus)
     & $add 'HORA'            (Get-TimeStatus)
+    & $add 'ERRORES 24 H'    (Get-RecentErrors | Group-Object ProviderName, Id | Sort-Object Count -Descending | Select-Object -First 15 Count, Name)
+    & $add 'PROCESOS'        (Get-TopProcesses | Select-Object -First 10 Proceso, PID, CpuPct, MemMB)
     if (Get-Command Test-LocationState -ErrorAction SilentlyContinue) {
         & $add 'UBICACION' (Test-LocationState | Select-Object Compliant, @{n='Issues';e={$_.Issues -join '; '}}, ServiceStatus, MasterSwitch, ConsentMachine, ConsentNonPackaged)
     }
@@ -624,7 +717,8 @@ function Invoke-ForEachUserHive {
 
 Export-ModuleMember -Function @(
     'Get-SupportSummary', 'Test-AudioSetup', 'Get-PrinterReport', 'Get-UpdateStatus', 'Get-TimeStatus',
+    'Get-RecentErrors', 'Get-TopProcesses',
     'Repair-Network', 'Restart-SupportService', 'Restart-AudioServices', 'Clear-PrintQueue', 'Sync-SystemTime',
     'Clear-TempFiles', 'Enable-MediaConsent', 'Set-NoSleepPower', 'Start-UpdateScan', 'Repair-SystemFiles',
-    'Export-SupportReport'
+    'Restart-ComputerDelayed', 'Export-SupportReport'
 )

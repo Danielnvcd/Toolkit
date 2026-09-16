@@ -191,7 +191,16 @@ if ($Sign) {
 #  Publicar en dist\
 # ---------------------------------------------------------------------------
 New-Item -Path $distDir -ItemType Directory -Force | Out-Null
-Copy-Item $exe -Destination $distDir -Force
+try {
+    Copy-Item $exe -Destination $distDir -Force -ErrorAction Stop
+} catch {
+    $running = Get-Process -Name Toolkit -ErrorAction SilentlyContinue
+    Write-Host ''
+    Write-Host '  x No se pudo copiar a dist\Toolkit.exe: el archivo esta en uso.' -ForegroundColor Red
+    if ($running) { Write-Host ("    Toolkit.exe esta abierto (PID {0}). Cierralo y vuelve a ejecutar el build." -f ($running.Id -join ', ')) -ForegroundColor Red }
+    Write-Host ("    El exe nuevo (compilado y {0}) esta en: {1}" -f $(if ($Sign) { 'firmado' } else { 'sin firmar' }), $exe) -ForegroundColor Yellow
+    exit 2
+}
 
 $hash = (Get-FileHash (Join-Path $distDir 'Toolkit.exe') -Algorithm SHA256).Hash
 

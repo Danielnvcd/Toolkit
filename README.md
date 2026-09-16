@@ -49,6 +49,8 @@ El motivo de todo esto es que los agentes hagan **check-in en Zoho People desde 
 
 El botón **Comprobar check-in Zoho** (o `Toolkit.exe /checkin`) recorre en orden todo lo que tiene que estar bien y dice si el equipo está listo o qué falta: capas de Windows, política de cada navegador instalado, adaptador Wi-Fi, posición real con su precisión, y conectividad (DNS + 443) hacia Zoho y hacia el servicio de posicionamiento de Microsoft. No modifica nada.
 
+**Probar en el navegador** abre una página local que pide la ubicación exactamente igual que Zoho y muestra coordenadas, precisión o el error concreto (permiso denegado, posición no disponible…). Es la prueba definitiva. **Ajustes de Windows** abre Configuración → Privacidad → Ubicación.
+
 Los sitios de Zoho y la precisión máxima aceptable se ajustan en `catalog.json` → `location.checkIn` (si tu Zoho está en el centro de datos europeo, cambia `.com` por `.eu`).
 
 ### Usuarios
@@ -84,6 +86,8 @@ Las herramientas de un clic que un técnico de primer nivel usa a diario. Todas 
 | Impresoras | Cola de impresión, impresoras, predeterminada, estado y trabajos atascados |
 | Windows Update | Último parche, reinicio pendiente, estado del servicio |
 | Hora del sistema | Hora, zona horaria, fuente NTP y desfase |
+| Errores recientes (24 h) | Errores y críticos del registro de eventos agrupados por origen; marca apagados inesperados y fallos de disco |
+| Procesos que más consumen | Top por CPU y por memoria, con el título de ventana |
 
 | Reparación | Qué hace |
 |---|---|
@@ -97,6 +101,7 @@ Las herramientas de un clic que un técnico de primer nivel usa a diario. Todas 
 | No suspender el equipo | Con corriente no se suspende ni hiberna; la pantalla se apaga a los 15 min |
 | Buscar actualizaciones | Pide a Windows Update buscar, descargar e instalar |
 | Reparar archivos del sistema | `sfc /scannow` (5-20 min) |
+| Reiniciar equipo (60 s) / Cancelar | Reinicio con aviso de Windows y cuenta atrás para que el agente guarde |
 
 **Guardar reporte para ticket** genera un `.txt` con todo lo anterior más ubicación, usuarios e `ipconfig /all` en `C:\ProgramData\Toolkit\reports\` y lo abre en el Explorador, listo para adjuntar a un escalado. **Copiar log** copia lo que hay en pantalla al portapapeles.
 
@@ -111,6 +116,8 @@ Toolkit.exe                                # interfaz gráfica
 Toolkit.exe /report                        # auditoría completa, no modifica nada
 Toolkit.exe /report /modules:users         # solo el inventario de cuentas
 Toolkit.exe /checkin                       # ¿funcionará el check-in de Zoho con ubicación? no modifica nada
+Toolkit.exe /support                       # diagnóstico de soporte completo + reporte para ticket
+Toolkit.exe /support:audio,events          # solo esas acciones (info, audio, printers, update, time, events, procs, report)
 Toolkit.exe /silent /all                   # aplica todo sin preguntar
 Toolkit.exe /silent /modules:location      # solo la ubicación
 Toolkit.exe /silent /apps:ejemplo-7zip     # solo esas apps del catálogo
@@ -221,7 +228,7 @@ Consejos si vas por ese camino:
 - **Ajusta la ventana de mantenimiento** (`Test-MaintenanceWindow` en `Toolkit.Core.psm1`). Por defecto solo instala aplicaciones entre las 23:00 y las 07:00 para no interrumpir a nadie.
 - **Prueba en máquina virtual** antes. El procedimiento paso a paso está en [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).
 
-El diseño completo está en [`docs/PLAN.md`](docs/PLAN.md).
+El diseño completo está en [`docs/PLAN.md`](docs/PLAN.md) y el plan de mejora (funcionalidad, compatibilidad, seguridad, calidad, despliegue), con prioridades y orden sugerido, en [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 

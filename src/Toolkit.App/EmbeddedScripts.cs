@@ -83,6 +83,27 @@ namespace Toolkit.App
             }
         }
 
+        private static System.Drawing.Image _companyLogo;
+
+        /// <summary>Logo de la empresa (assets\bpo-centers-logo.png) para la cabecera. Null si falta.</summary>
+        public static System.Drawing.Image CompanyLogo
+        {
+            get
+            {
+                if (_companyLogo != null) return _companyLogo;
+                try
+                {
+                    using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Assets/bpo-centers-logo.png"))
+                    {
+                        // Copia en memoria: Image.FromStream exige que el stream siga vivo.
+                        if (stream != null) _companyLogo = new System.Drawing.Bitmap(System.Drawing.Image.FromStream(stream));
+                    }
+                }
+                catch { }
+                return _companyLogo;
+            }
+        }
+
         /// <summary>
         /// Catalogo de configuracion. Prioridad:
         ///   1. Ruta explicita (/config:...)

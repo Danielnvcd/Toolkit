@@ -2,8 +2,9 @@
   "schemaVersion": 1,
   "_comment": "Catalogo del toolkit. TODO lo marcado VERIFICAR debe validarse a mano en laboratorio antes de poner enabled=true.",
 
-  "packageRepo": "\\\\SRV-FILE\\Toolkit$\\packages",
-  "reportShare": "\\\\SRV-FILE\\Toolkit$",
+  "_shares_comment": "Opcionales. packageRepo = share UNC con los instaladores (vacio = se descargan de la url de cada ficha). reportShare = share donde subir reportes (vacio = solo en local, C:\\ProgramData\\Toolkit\\reports). Ejemplo: \\\\SRV-FILE\\Toolkit$\\packages y \\\\SRV-FILE\\Toolkit$. No dejes un servidor que no exista: cada ejecucion lo intentaria.",
+  "packageRepo": "",
+  "reportShare": "",
 
   "location": {
     "lockDown": true,
@@ -21,25 +22,29 @@
   },
 
   "network": {
+    "_comment": "Destinos reales del call center. Anade aqui el conmutador/PBX, el CRM o la VPN cuando tengas sus hosts: { \"label\": \"PBX\", \"host\": \"pbx.empresa.com\" } en pingTargets, y { \"label\": \"SIP TLS\", \"host\": \"pbx.empresa.com\", \"port\": 5061 } en tcpTargets. Un host inexistente cuenta como CRITICO, asi que no dejes marcadores.",
     "pingTargets": [
-      { "label": "Internet (Google DNS)", "host": "8.8.8.8" },
+      { "label": "Internet (Google DNS)",  "host": "8.8.8.8" },
       { "label": "Internet (Cloudflare)",  "host": "1.1.1.1" },
-      { "label": "Conmutador / SBC",      "host": "CAMBIAR.pbx.empresa.com" },
-      { "label": "CRM",                    "host": "CAMBIAR.crm.empresa.com" }
+      { "label": "Genesys Cloud",          "host": "login.mypurecloud.com" },
+      { "label": "Zoho",                   "host": "accounts.zoho.com" }
     ],
     "dnsNames": [
       "www.google.com",
-      "CAMBIAR.crm.empresa.com",
-      "CAMBIAR.pbx.empresa.com"
+      "login.mypurecloud.com",
+      "people.zoho.com",
+      "api.krisp.ai"
     ],
     "tcpTargets": [
-      { "label": "SIP TLS",   "host": "CAMBIAR.pbx.empresa.com", "port": 5061 },
-      { "label": "SIP TCP",   "host": "CAMBIAR.pbx.empresa.com", "port": 5060 },
-      { "label": "HTTPS CRM", "host": "CAMBIAR.crm.empresa.com", "port": 443 },
-      { "label": "VPN SSL",   "host": "CAMBIAR.vpn.empresa.com", "port": 443 }
+      { "label": "Genesys Cloud (login)",  "host": "login.mypurecloud.com", "port": 443 },
+      { "label": "Genesys Cloud (apps)",   "host": "apps.mypurecloud.com",  "port": 443 },
+      { "label": "Zoho People",            "host": "people.zoho.com",       "port": 443 },
+      { "label": "Zoho cuentas",           "host": "accounts.zoho.com",     "port": 443 },
+      { "label": "Krisp",                  "host": "api.krisp.ai",          "port": 443 }
     ],
     "tlsTargets": [
-      { "host": "CAMBIAR.crm.empresa.com", "port": 443 }
+      { "host": "login.mypurecloud.com", "port": 443 },
+      { "host": "people.zoho.com",       "port": 443 }
     ],
     "pingCount": 50
   },

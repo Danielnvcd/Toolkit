@@ -30,7 +30,7 @@ namespace Toolkit.App
         private bool _modulesLoaded;
 
         /// <summary>Tiempo limite global de una ejecucion completa.</summary>
-        public int TimeoutMinutes { get; set; } = 30;
+        public int TimeoutMinutes { get; set; } = 90;   // dos instaladores grandes (descarga + instalacion) caben de sobra
 
         public event EventHandler<ScriptOutputEventArgs> Output;
 

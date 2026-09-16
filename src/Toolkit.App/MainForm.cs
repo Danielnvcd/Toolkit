@@ -84,38 +84,38 @@ namespace Toolkit.App
             var area = Screen.FromPoint(Cursor.Position).WorkingArea;
             Size = new Size(Math.Min(940, area.Width - 40), Math.Min(720, area.Height - 40));
 
-            // Cabecera: logo + nombre de la app a la izquierda, equipo y usuario a la derecha.
-            var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.FromArgb(32, 45, 66) };
+            // Cabecera: logo de la empresa a la izquierda, equipo y usuario a la derecha.
+            // El icono de la app ya va en la barra de titulo; aqui no se repite. Fondo
+            // blanco porque el logo (texto negro sobre transparente) esta hecho para eso.
+            var header = new Panel { Dock = DockStyle.Top, Height = 56, BackColor = Color.White };
             var logo = new PictureBox
             {
-                Dock = DockStyle.Left, Width = 48, SizeMode = PictureBoxSizeMode.CenterImage,
-                Margin = new Padding(0)
+                Dock = DockStyle.Left, SizeMode = PictureBoxSizeMode.Zoom,
+                Margin = new Padding(0), Padding = new Padding(14, 6, 0, 6)
             };
-            if (EmbeddedScripts.AppIcon != null)
+            var img = EmbeddedScripts.CompanyLogo;
+            if (img != null)
             {
-                try { logo.Image = new Icon(EmbeddedScripts.AppIcon, 32, 32).ToBitmap(); } catch { }
+                logo.Image = img;
+                // Ancho proporcional a la altura de la cabecera (menos el padding).
+                logo.Width = (int)Math.Round(img.Width * (header.Height - 12) / (double)img.Height) + logo.Padding.Horizontal;
             }
-            var title = new Label
+            else
             {
-                Text = "Toolkit BPO",
-                Dock = DockStyle.Left, AutoSize = true,
-                Padding = new Padding(0, 12, 0, 0),
-                Font = new Font("Segoe UI", 13F, FontStyle.Bold),
-                ForeColor = Color.White
-            };
-            // "Acerca de" a la derecha del todo; el logo y el nombre tambien lo abren.
+                logo.Width = 0;
+            }
+            // "Acerca de" a la derecha del todo; el logo tambien lo abre.
             var about = new LinkLabel
             {
                 Text = "Acerca de", Dock = DockStyle.Right, AutoSize = false, Width = 84,
                 TextAlign = ContentAlignment.MiddleCenter,
-                LinkColor = Color.FromArgb(200, 210, 225), ActiveLinkColor = Color.White,
-                VisitedLinkColor = Color.FromArgb(200, 210, 225), LinkBehavior = LinkBehavior.HoverUnderline,
+                LinkColor = Color.FromArgb(32, 45, 66), ActiveLinkColor = Color.FromArgb(0, 90, 150),
+                VisitedLinkColor = Color.FromArgb(32, 45, 66), LinkBehavior = LinkBehavior.HoverUnderline,
                 Font = new Font("Segoe UI", 9F)
             };
             about.LinkClicked += (s, e) => ShowAbout();
-            logo.Cursor = title.Cursor = Cursors.Hand;
+            logo.Cursor = Cursors.Hand;
             logo.Click  += (s, e) => ShowAbout();
-            title.Click += (s, e) => ShowAbout();
 
             var machine = new Label
             {
@@ -124,9 +124,11 @@ namespace Toolkit.App
                 TextAlign = ContentAlignment.MiddleRight,
                 Padding = new Padding(8, 0, 8, 0),
                 Font = new Font("Segoe UI", 9.5F),
-                ForeColor = Color.FromArgb(200, 210, 225)
+                ForeColor = Color.FromArgb(90, 100, 115)
             };
-            header.Controls.AddRange(new Control[] { machine, about, title, logo });
+            // Linea fina bajo la cabecera para separarla del contenido gris.
+            var rule = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Color.FromArgb(215, 215, 215) };
+            header.Controls.AddRange(new Control[] { machine, about, logo, rule });
 
             _tabs = new TabControl { Dock = DockStyle.Fill };
             _tabApps  = BuildAppsTab();
@@ -237,6 +239,8 @@ namespace Toolkit.App
             var activate = NewButton("ACTIVAR UBICACION",         Color.FromArgb(0, 120, 60),    Color.White);
             var audit    = NewButton("Auditar  (no cambia nada)", Color.FromArgb(230, 230, 230), Color.Black);
             var checkIn  = NewButton("Comprobar check-in Zoho",   Color.FromArgb(0, 90, 150),    Color.White);
+            var geoTest  = NewButton("Probar en el navegador",    Color.FromArgb(0, 90, 150),    Color.White);
+            var settings = NewButton("Ajustes de Windows",        Color.FromArgb(230, 230, 230), Color.Black);
             var rollback = NewButton("Revertir",                  Color.FromArgb(150, 40, 40),   Color.White);
 
             var tip = new ToolTip();
@@ -246,13 +250,19 @@ namespace Toolkit.App
             tip.SetToolTip(audit,    "Muestra el estado actual sin modificar nada.");
             tip.SetToolTip(checkIn,  "Recorre todo lo que necesita el check-in de Zoho y dice que falta. No modifica nada.");
             tip.SetToolTip(rollback, "Deshace los cambios de registro que hizo el toolkit en este equipo.");
+            tip.SetToolTip(geoTest,  "Abre una pagina local que pide la ubicacion igual que Zoho y muestra coordenadas, precision o el error exacto.");
+            tip.SetToolTip(settings, "Abre Configuracion > Privacidad > Ubicacion de Windows (ahi se fija la ubicacion predeterminada).");
 
             activate.Click += (s, e) => ActivateLocation();
             audit.Click    += async (s, e) => await Execute("location", reportOnly: true);
             checkIn.Click  += async (s, e) => await Execute("location", reportOnly: true, checkIn: true);
+            geoTest.Click  += async (s, e) => await RunSupport("Prueba en el navegador",
+                "param($Root) Open-BrowserGeoTest -Root $Root | Out-Null",
+                parameters: new Dictionary<string, object> { { "Root", _args.Root } });
+            settings.Click += async (s, e) => await RunSupport("Ajustes de ubicacion", "Open-LocationSettings");
             rollback.Click += (s, e) => Rollback();
 
-            stack.Controls.Add(NewButtonRow(activate, audit, checkIn, rollback));
+            stack.Controls.Add(NewButtonRow(activate, audit, checkIn, geoTest, settings, rollback));
 
             tab.Controls.Add(stack);
             return tab;
@@ -436,12 +446,16 @@ namespace Toolkit.App
             var bPrint   = NewButton("Impresoras",          grey, Color.Black);
             var bUpdate  = NewButton("Windows Update",      grey, Color.Black);
             var bTime    = NewButton("Hora del sistema",    grey, Color.Black);
+            var bEvents  = NewButton("Errores recientes (24 h)", grey, Color.Black);
+            var bProcs   = NewButton("Procesos que mas consumen", grey, Color.Black);
             bInfo.Click   += async (s, e) => await RunSupport("Info del equipo",   "Get-SupportSummary | Out-Null");
             bAudio.Click  += async (s, e) => await RunSupport("Audio y microfono", "Test-AudioSetup | Out-Null");
             bPrint.Click  += async (s, e) => await RunSupport("Impresoras",        "Get-PrinterReport | Out-Null");
             bUpdate.Click += async (s, e) => await RunSupport("Windows Update",    "Get-UpdateStatus | Out-Null");
             bTime.Click   += async (s, e) => await RunSupport("Hora del sistema",  "Get-TimeStatus | Out-Null");
-            stack.Controls.Add(NewButtonRow(bInfo, bAudio, bPrint, bUpdate, bTime));
+            bEvents.Click += async (s, e) => await RunSupport("Errores recientes", "Get-RecentErrors | Out-Null");
+            bProcs.Click  += async (s, e) => await RunSupport("Procesos",          "Get-TopProcesses | Out-Null");
+            stack.Controls.Add(NewButtonRow(bInfo, bAudio, bPrint, bUpdate, bTime, bEvents, bProcs));
 
             // --- Reparaciones rapidas ---
             stack.Controls.Add(NewSection("Reparaciones rapidas"));
@@ -475,7 +489,12 @@ namespace Toolkit.App
                 "Se pedira a Windows Update que busque, descargue e instale actualizaciones. Puede pedir reinicio mas tarde.");
             bSfc.Click     += async (s, e) => await RunSupport("Reparar archivos del sistema", "Repair-SystemFiles | Out-Null",
                 "sfc /scannow tarda entre 5 y 20 minutos. No cierres el toolkit mientras tanto.");
-            stack.Controls.Add(NewButtonRow(bNet, bNetDeep, bAudioR, bQueue, bSync, bTemp, bMedia, bPower, bScan, bSfc));
+            var bReboot = NewButton("Reiniciar equipo (60 s)", Color.FromArgb(150, 40, 40), Color.White);
+            var bAbort  = NewButton("Cancelar reinicio",       grey, Color.Black);
+            bReboot.Click += async (s, e) => await RunSupport("Reiniciar equipo", "Restart-ComputerDelayed -Seconds 60 | Out-Null",
+                "El equipo se reiniciara en 60 segundos. El agente vera un aviso de Windows con la cuenta atras y podra guardar.\n\nSe puede cancelar con 'Cancelar reinicio' antes de que venza.");
+            bAbort.Click  += async (s, e) => await RunSupport("Cancelar reinicio", "Restart-ComputerDelayed -Cancel | Out-Null");
+            stack.Controls.Add(NewButtonRow(bNet, bNetDeep, bAudioR, bQueue, bSync, bTemp, bMedia, bPower, bScan, bSfc, bReboot, bAbort));
 
             // --- Reporte ---
             stack.Controls.Add(NewSection("Reporte"));

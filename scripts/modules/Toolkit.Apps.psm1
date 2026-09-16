@@ -185,7 +185,8 @@ function Get-AppInstaller {
             $pp = $ProgressPreference
             $ProgressPreference = 'SilentlyContinue'   # sin esto, Invoke-WebRequest es ~10x mas lento
             try {
-                Invoke-WebRequest -Uri $App.source.url -OutFile $dest -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+                # 30 min: Krisp/Genesys pesan 150-330 MB y hay sedes con enlaces de pocos Mbps.
+                Invoke-WebRequest -Uri $App.source.url -OutFile $dest -UseBasicParsing -TimeoutSec 1800 -ErrorAction Stop
             } finally {
                 $ProgressPreference = $pp
             }
