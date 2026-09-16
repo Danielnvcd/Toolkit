@@ -17,7 +17,7 @@
     "pingTargets": [
       { "label": "Internet (Google DNS)", "host": "8.8.8.8" },
       { "label": "Internet (Cloudflare)",  "host": "1.1.1.1" },
-      { "label": "Centralita / SBC",       "host": "CAMBIAR.pbx.empresa.com" },
+      { "label": "Conmutador / SBC",      "host": "CAMBIAR.pbx.empresa.com" },
       { "label": "CRM",                    "host": "CAMBIAR.crm.empresa.com" }
     ],
     "dnsNames": [

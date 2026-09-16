@@ -72,7 +72,7 @@ Toolkit.exe /uninstall-agent
    ```
    Lee el `ProductCode`, la versión, las propiedades públicas del MSI (ahí están `SERVER`, `COMPANYKEY`...) y el SHA-256. Después hay que **validar la instalación en una VM limpia** antes de poner `enabled: true`.
 
-2. **Cambiar los destinos de red** en `scripts/config/catalog.json` (todo lo marcado `CAMBIAR`): centralita, CRM, VPN.
+2. **Cambiar los destinos de red** en `scripts/config/catalog.json` (todo lo marcado `CAMBIAR`): conmutador, CRM, VPN.
 
 3. **Ajustar la ventana de mantenimiento** (`Test-MaintenanceWindow` en `Toolkit.Core.psm1`) a los turnos reales. Por defecto es 23:00–07:00; en una operación 24/7 no se instalaría nunca nada.
 

@@ -294,7 +294,7 @@ Sé honesto sobre el alcance de estas pruebas:
 
 | No validable en VM | Por qué | Cómo validarlo |
 |---|---|---|
-| **Precisión de la ubicación** | Sin GPS ni WiFi real, `Test-LocationApi` devolverá `NoData` o precisión pésima por IP | Portátil real de un agente, con el proveedor de telefonía si el caso es E911 |
+| **Precisión de la ubicación** | Sin GPS ni WiFi real, `Test-LocationApi` devolverá `NoData` o precisión pésima por IP | Laptop real de un agente, con el proveedor de telefonía si el caso es E911 |
 | **Latencia, jitter y pérdida reales** | La red de la VM es la del host con NAT en medio | Un puesto real del call center, en su VLAN |
 | **Señal WiFi** | La VM no tiene adaptador inalámbrico | Puesto real |
 | **MTU del enlace corporativo** | NAT del hipervisor la enmascara | Puesto real, sobre todo con la VPN levantada |

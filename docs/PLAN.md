@@ -434,7 +434,7 @@ En un call center la red no se mide con "¿hay Internet?". Se mide con las métr
 | Categoría | Prueba | Umbral de alarma (VoIP) |
 |---|---|---|
 | **Conectividad** | Puerta de enlace, DNS, salida a Internet, portal cautivo | — |
-| **Latencia** | RTT a la centralita/SBC y al CRM | > 150 ms |
+| **Latencia** | RTT al conmutador/SBC y al CRM | > 150 ms |
 | **Jitter** | Desviación entre 100 pings consecutivos | > 30 ms |
 | **Pérdida de paquetes** | % sobre 100 paquetes | > 1% |
 | **DNS** | Tiempo de resolución, servidores configurados, resolución de dominios corporativos | > 100 ms |
