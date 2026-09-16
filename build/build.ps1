@@ -191,15 +191,28 @@ if ($Sign) {
 #  Publicar en dist\
 # ---------------------------------------------------------------------------
 New-Item -Path $distDir -ItemType Directory -Force | Out-Null
+$distExe = Join-Path $distDir 'Toolkit.exe'
+# Restos de builds anteriores que se apartaron por estar en uso (ver abajo).
+Get-ChildItem $distDir -Filter 'Toolkit.old-*.exe' -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 try {
-    Copy-Item $exe -Destination $distDir -Force -ErrorAction Stop
+    Copy-Item $exe -Destination $distExe -Force -ErrorAction Stop
 } catch {
+    # Un exe en ejecucion no se puede sobrescribir, pero SI renombrar: se aparta
+    # el viejo (el proceso sigue corriendo sobre el renombrado) y se copia el nuevo.
     $running = Get-Process -Name Toolkit -ErrorAction SilentlyContinue
-    Write-Host ''
-    Write-Host '  x No se pudo copiar a dist\Toolkit.exe: el archivo esta en uso.' -ForegroundColor Red
-    if ($running) { Write-Host ("    Toolkit.exe esta abierto (PID {0}). Cierralo y vuelve a ejecutar el build." -f ($running.Id -join ', ')) -ForegroundColor Red }
-    Write-Host ("    El exe nuevo (compilado y {0}) esta en: {1}" -f $(if ($Sign) { 'firmado' } else { 'sin firmar' }), $exe) -ForegroundColor Yellow
-    exit 2
+    $old = Join-Path $distDir ('Toolkit.old-{0}.exe' -f (Get-Date -Format 'HHmmss'))
+    try {
+        Rename-Item -LiteralPath $distExe -NewName (Split-Path $old -Leaf) -ErrorAction Stop
+        Copy-Item $exe -Destination $distExe -Force -ErrorAction Stop
+        Write-Host ("  i dist\Toolkit.exe estaba en uso (PID {0}): se aparto como {1} y se publico el nuevo." -f ($running.Id -join ', '), (Split-Path $old -Leaf)) -ForegroundColor Yellow
+        Write-Host '    El proceso viejo sigue corriendo sobre el archivo apartado; se borra en el proximo build.' -ForegroundColor Yellow
+    } catch {
+        Write-Host ''
+        Write-Host '  x No se pudo publicar en dist\Toolkit.exe: el archivo esta en uso y no se pudo apartar.' -ForegroundColor Red
+        if ($running) { Write-Host ("    Toolkit.exe esta abierto (PID {0}). Cierralo y vuelve a ejecutar el build." -f ($running.Id -join ', ')) -ForegroundColor Red }
+        Write-Host ("    El exe nuevo (compilado y {0}) esta en: {1}" -f $(if ($Sign) { 'firmado' } else { 'sin firmar' }), $exe) -ForegroundColor Yellow
+        exit 2
+    }
 }
 
 $hash = (Get-FileHash (Join-Path $distDir 'Toolkit.exe') -Algorithm SHA256).Hash

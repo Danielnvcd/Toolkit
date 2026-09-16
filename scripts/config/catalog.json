@@ -22,11 +22,11 @@
   },
 
   "network": {
-    "_comment": "Destinos reales del call center. Anade aqui el conmutador/PBX, el CRM o la VPN cuando tengas sus hosts: { \"label\": \"PBX\", \"host\": \"pbx.empresa.com\" } en pingTargets, y { \"label\": \"SIP TLS\", \"host\": \"pbx.empresa.com\", \"port\": 5061 } en tcpTargets. Un host inexistente cuenta como CRITICO, asi que no dejes marcadores.",
+    "_comment": "Destinos reales del call center. Anade aqui el conmutador/PBX, el CRM o la VPN cuando tengas sus hosts: { \"label\": \"PBX\", \"host\": \"pbx.empresa.com\" } en pingTargets, y { \"label\": \"SIP TLS\", \"host\": \"pbx.empresa.com\", \"port\": 5061 } en tcpTargets. En pingTargets solo hosts que RESPONDAN a ping (login.mypurecloud.com y people.zoho.com no responden ICMP y darian 100 % de perdida); para esos usa tcpTargets/tlsTargets. Un host inexistente cuenta como CRITICO, asi que no dejes marcadores.",
     "pingTargets": [
       { "label": "Internet (Google DNS)",  "host": "8.8.8.8" },
       { "label": "Internet (Cloudflare)",  "host": "1.1.1.1" },
-      { "label": "Genesys Cloud",          "host": "login.mypurecloud.com" },
+      { "label": "Genesys Cloud",          "host": "api.mypurecloud.com" },
       { "label": "Zoho",                   "host": "accounts.zoho.com" }
     ],
     "dnsNames": [
@@ -162,7 +162,7 @@
       },
       "successCodes": [0, 3010],
       "requiresReboot": false,
-      "notes": "BLOQUEANTE: producto no identificado. Rellenar ficha completa (docs/APP-FICHAS/) probando el instalador a mano: tipo de instalador, conmutador silencioso real, y como detectarlo una vez instalado."
+      "notes": "PENDIENTE DEL INSTALADOR. MaxAssist (antes RecallMax, maxassist.com) no publica el instalador de Windows: lo entrega el proveedor a cada cliente (support@maxassist.com, +1 800 651 8603). Cuando lo tengas: (1) en un PC donde ya este instalado, ejecuta scripts\\tools\\Get-InstalledAppInfo.ps1 -Name MaxAssist para ver tipo de instalador, version y ProductCode; (2) scripts\\tools\\New-AppFicha.ps1 -Path <instalador> -Id maxassist genera esta ficha; (3) copia el instalador al share (packageRepo) o pon la url interna, y enabled=true. Los conmutadores /S de abajo son una suposicion (NSIS): confirmarlos con el instalador real."
     },
 
     {
