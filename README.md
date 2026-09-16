@@ -24,6 +24,7 @@ Los `.psm1` **nunca se escriben en disco**: se cargan en un runspace de PowerShe
 `Invoke-ToolkitRun.ps1` es la **única** fuente de la lógica y la comparten los dos caminos: el exe y `Toolkit.ps1` (envoltorio de línea de comandos para depurar sin recompilar). La interfaz gráfica y el despliegue masivo ejecutan literalmente el mismo código.
 
 El plan completo está en [`docs/PLAN.md`](docs/PLAN.md).
+El procedimiento de pruebas en máquina virtual, en [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).
 
 ---
 
