@@ -213,6 +213,8 @@ namespace Toolkit.App
         // Description): asi lo que ve el Explorador en Propiedades > Detalles y lo que
         // ve el usuario en Acerca de es siempre lo mismo.
         public const string AppName = "Toolkit BPO";
+        /// <summary>Ficha del proyecto: guia de uso para soporte y descarga de la ultima version.</summary>
+        public const string UpdatesUrl = "https://danielnvcd.site/proyectos/toolkit";
 
         public static string AppAuthor    => AssemblyAttr<System.Reflection.AssemblyCompanyAttribute>(a => a.Company)     ?? "danielnvcd";
         public static string AppCopyright => AssemblyAttr<System.Reflection.AssemblyCopyrightAttribute>(a => a.Copyright) ?? "";

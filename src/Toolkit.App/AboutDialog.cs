@@ -22,7 +22,7 @@ namespace Toolkit.App
             ShowInTaskbar = false;
             Font = new Font("Segoe UI", 9F);
             BackColor = Color.White;
-            ClientSize = new Size(460, 300);
+            ClientSize = new Size(480, 330);
 
             var root = new TableLayoutPanel
             {
@@ -50,6 +50,23 @@ namespace Toolkit.App
                 "Un solo ejecutable, sin instalacion. Los modulos de PowerShell van embebidos y se ejecutan en memoria. " +
                 "Requiere Windows 10/11 con .NET Framework 4.8 y PowerShell 5.1, que vienen de fabrica.",
                 8.5F, FontStyle.Regular, Color.DimGray, top: 12));
+
+            // Actualizaciones y guia de uso: la ficha del proyecto en la web.
+            var updates = new LinkLabel
+            {
+                Text = "Actualizaciones y guia de uso: " + Program.UpdatesUrl,
+                AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 12, 0, 2),
+                LinkColor = Color.FromArgb(0, 90, 150), ActiveLinkColor = Color.FromArgb(0, 120, 60),
+                VisitedLinkColor = Color.FromArgb(0, 90, 150), LinkBehavior = LinkBehavior.HoverUnderline
+            };
+            updates.LinkArea = new LinkArea(updates.Text.IndexOf("http", StringComparison.Ordinal), Program.UpdatesUrl.Length);
+            updates.LinkClicked += (s, e) =>
+            {
+                try { System.Diagnostics.Process.Start(Program.UpdatesUrl); }
+                catch (Exception ex) { MessageBox.Show(this, "No se pudo abrir el navegador: " + ex.Message, Program.AppName); }
+            };
+            text.Controls.Add(updates);
 
             var ok = new Button
             {
