@@ -58,6 +58,30 @@ namespace Toolkit.App
             return Read("Invoke-ToolkitRun.ps1");
         }
 
+        private static System.Drawing.Icon _appIcon;
+
+        /// <summary>
+        /// Logo de la app (assets\logo.ico embebido) para las ventanas. Se carga una
+        /// vez. Si el recurso faltara, devuelve null y la ventana usa el icono por
+        /// defecto: el logo nunca debe impedir que el toolkit arranque.
+        /// </summary>
+        public static System.Drawing.Icon AppIcon
+        {
+            get
+            {
+                if (_appIcon != null) return _appIcon;
+                try
+                {
+                    using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Assets/logo.ico"))
+                    {
+                        if (stream != null) _appIcon = new System.Drawing.Icon(stream);
+                    }
+                }
+                catch { }
+                return _appIcon;
+            }
+        }
+
         /// <summary>
         /// Catalogo de configuracion. Prioridad:
         ///   1. Ruta explicita (/config:...)

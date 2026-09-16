@@ -13,6 +13,8 @@ namespace Toolkit.App
         public bool InstallAgent { get; set; }
         public bool UninstallAgent { get; set; }
         public bool NoLockDown { get; set; }
+        public bool NoBrowsers { get; set; }
+        public bool CheckIn { get; set; }
         public bool Force { get; set; }
         public bool ShowHelp { get; set; }
 
@@ -76,6 +78,13 @@ namespace Toolkit.App
                     case "install-agent":   a.InstallAgent = true; break;
                     case "uninstall-agent": a.UninstallAgent = true; break;
                     case "nolockdown":      a.NoLockDown = true; break;
+                    case "nobrowsers":      a.NoBrowsers = true; break;
+                    case "checkin":
+                        // Comprobacion del check-in de Zoho: solo lectura, solo modulo ubicacion.
+                        a.CheckIn = true;
+                        a.ReportOnly = true;
+                        a.Modules = new List<string> { "location" };
+                        break;
                     case "force":           a.Force = true; break;
 
                     case "share":  a.SharePath = value; break;
@@ -111,12 +120,14 @@ namespace Toolkit.App
         public static void PrintUsage()
         {
             Console.WriteLine(@"
-TOOLKIT CALL CENTER  v" + Program.AppVersion() + @"
+TOOLKIT BPO  v" + Program.AppVersion() + @"
 Un solo ejecutable. Los scripts van dentro.
 
   Toolkit.exe                          Interfaz grafica (tecnico en sitio)
   Toolkit.exe /silent /all             Desatendido: aplica todo
   Toolkit.exe /report                  Auditoria: evalua SIN modificar nada
+  Toolkit.exe /checkin                 Comprueba si el check-in de Zoho con ubicacion
+                                       funcionara en el navegador (no modifica nada)
   Toolkit.exe /silent /modules:location,network
   Toolkit.exe /silent /apps:netextender,goto
   Toolkit.exe /rollback                Revierte los cambios de registro
@@ -133,6 +144,7 @@ OPCIONES
   /ring:<nombre>     anillo de despliegue del agente
   /root:<ruta>       carpeta de datos (por defecto C:\ProgramData\Toolkit)
   /nolockdown        NO bloquea el conmutador de ubicacion al usuario
+  /nobrowsers        NO toca las politicas de ubicacion de Chrome/Edge/Firefox
   /force             ignora la ventana de mantenimiento
   /silent            sin interaccion ni salida decorada
 

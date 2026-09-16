@@ -35,7 +35,7 @@ namespace Toolkit.App
         private readonly List<Button> _actionButtons = new List<Button>();
 
         // Pestana Ubicacion
-        private CheckBox _chkLockDown, _chkGetPosition;
+        private CheckBox _chkLockDown, _chkBrowsers, _chkGetPosition;
 
         // Pestana Aplicaciones
         private CheckedListBox _apps;
@@ -66,23 +66,53 @@ namespace Toolkit.App
 
         private void BuildUi()
         {
-            Text = "Toolkit Call Center  v" + Program.AppVersion();
-            Size = new Size(940, 720);
-            MinimumSize = new Size(780, 560);
-            StartPosition = FormStartPosition.CenterScreen;
+            // Escalado DPI: el manifiesto declara la app PerMonitorV2, asi que Windows
+            // NO la estira. Sin esto, al 125 %/150 % el texto crece y los controles no,
+            // y se pisan. Todas las medidas de este archivo son a 96 ppp.
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96F, 96F);
+
+            Text = "Toolkit BPO";
+            if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
             Font = new Font("Segoe UI", 9F);
             BackColor = Color.FromArgb(243, 243, 243);
+            StartPosition = FormStartPosition.CenterScreen;
+            MinimumSize = new Size(640, 480);
 
-            var header = new Label
+            // Tamano inicial: el preferido, pero nunca mas grande que la pantalla
+            // (portatiles de 1366x768 con la barra de tareas, monitores pequenos...).
+            var area = Screen.FromPoint(Cursor.Position).WorkingArea;
+            Size = new Size(Math.Min(940, area.Width - 40), Math.Min(720, area.Height - 40));
+
+            // Cabecera: logo + nombre de la app a la izquierda, equipo y usuario a la derecha.
+            var header = new Panel { Dock = DockStyle.Top, Height = 48, BackColor = Color.FromArgb(32, 45, 66) };
+            var logo = new PictureBox
             {
-                Text = "  " + Environment.MachineName + "   ·   " + Environment.UserName,
-                Dock = DockStyle.Top,
-                Height = 44,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Font = new Font("Segoe UI", 12F, FontStyle.Bold),
-                BackColor = Color.FromArgb(32, 45, 66),
+                Dock = DockStyle.Left, Width = 48, SizeMode = PictureBoxSizeMode.CenterImage,
+                Margin = new Padding(0)
+            };
+            if (EmbeddedScripts.AppIcon != null)
+            {
+                try { logo.Image = new Icon(EmbeddedScripts.AppIcon, 32, 32).ToBitmap(); } catch { }
+            }
+            var title = new Label
+            {
+                Text = "Toolkit BPO",
+                Dock = DockStyle.Left, AutoSize = true,
+                Padding = new Padding(0, 12, 0, 0),
+                Font = new Font("Segoe UI", 13F, FontStyle.Bold),
                 ForeColor = Color.White
             };
+            var machine = new Label
+            {
+                Text = Environment.MachineName + "   ·   " + Environment.UserName + "   ·   v" + Program.AppVersion(),
+                Dock = DockStyle.Fill, AutoEllipsis = true,
+                TextAlign = ContentAlignment.MiddleRight,
+                Padding = new Padding(8, 0, 16, 0),
+                Font = new Font("Segoe UI", 9.5F),
+                ForeColor = Color.FromArgb(200, 210, 225)
+            };
+            header.Controls.AddRange(new Control[] { machine, title, logo });
 
             _tabs = new TabControl { Dock = DockStyle.Fill };
             _tabApps  = BuildAppsTab();
@@ -110,27 +140,43 @@ namespace Toolkit.App
                 WordWrap = false,
                 ScrollBars = RichTextBoxScrollBars.Both
             };
-            var logHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 4, 16, 8) };
+            var logHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 0, 16, 8) };
             logHost.Controls.Add(_log);
 
+            // Arriba las pestanas, abajo el log. El separador se arrastra con el raton;
+            // se hace mas ancho que el de serie (4 px) para que se pueda coger.
+            // Panel1 es el fijo: al agrandar la ventana, el espacio extra va al log.
             var split = new SplitContainer
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterDistance = 290,
-                Panel1MinSize = 220,
-                Panel2MinSize = 120
+                FixedPanel = FixedPanel.Panel1,
+                SplitterWidth = 8,
+                Panel1MinSize = 120,
+                Panel2MinSize = 80,
+                BackColor = Color.FromArgb(225, 225, 225)
             };
-            var tabHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 8, 16, 4) };
-            tabHost.Controls.Add(_tabs);
-            split.Panel1.Controls.Add(tabHost);
+            split.Panel1.BackColor = split.Panel2.BackColor = BackColor;
+            split.Panel1.Padding = new Padding(16, 8, 16, 0);
+            split.Panel1.Controls.Add(_tabs);
             split.Panel2.Controls.Add(logHost);
+            // Pista visual de que el separador se puede arrastrar.
+            split.Paint += (s, e) =>
+            {
+                var r = split.SplitterRectangle;
+                using (var pen = new Pen(Color.FromArgb(160, 160, 160)))
+                {
+                    int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+                    e.Graphics.DrawLine(pen, cx - 16, cy, cx + 16, cy);
+                }
+            };
 
             _progress = new ProgressBar { Dock = DockStyle.Bottom, Height = 4, Style = ProgressBarStyle.Marquee, Visible = false };
             _status = new Label
             {
                 Dock = DockStyle.Bottom,
                 Height = 26,
+                AutoEllipsis = true,
                 TextAlign = ContentAlignment.MiddleLeft,
                 Padding = new Padding(16, 0, 0, 0),
                 ForeColor = Color.DimGray,
@@ -139,7 +185,17 @@ namespace Toolkit.App
 
             Controls.AddRange(new Control[] { split, header, _progress, _status });
 
-            Append(LogLevel.Info,  "Toolkit v" + Program.AppVersion() + " — los scripts van embebidos en este ejecutable.");
+            // La distancia del separador se fija cuando el formulario ya tiene su
+            // tamano real (escalado DPI incluido); antes, WinForms la recorta.
+            Load += (s, e) =>
+            {
+                // 300 px logicos, pero nunca mas del 60 % de la altura: el log siempre queda visible.
+                var want = Math.Min(LogicalToDeviceUnits(300), (int)(split.Height * 0.6));
+                want = Math.Max(split.Panel1MinSize, Math.Min(want, split.Height - split.Panel2MinSize - split.SplitterWidth));
+                try { split.SplitterDistance = want; } catch (ArgumentException) { }
+            };
+
+            Append(LogLevel.Info,  "Toolkit BPO v" + Program.AppVersion() + " — los scripts van embebidos en este ejecutable.");
             Append(LogLevel.Debug, "Auditar evalua el equipo sin modificar nada. Empieza siempre por ahi.");
         }
 
@@ -149,32 +205,41 @@ namespace Toolkit.App
         private TabPage BuildLocationTab()
         {
             var tab = NewTab("Ubicacion");
+            var stack = NewStack();
 
-            var panel = new Panel { Dock = DockStyle.Top, Height = 132, Padding = new Padding(16, 12, 16, 8) };
+            stack.Controls.Add(NewHint(
+                "Activa la ubicacion de Windows (servicio, interruptor, consentimiento de todos los perfiles y politicas) " +
+                "y da permiso a los navegadores para que Zoho pueda hacer el check-in. Se aplica sin reiniciar."));
 
-            var intro = NewHint(
-                "Activa el servicio de ubicacion (lfsvc), el interruptor del sistema, el consentimiento de todos los " +
-                "perfiles del equipo y las politicas. Se aplica sin reiniciar.", 8);
-
-            _chkLockDown    = NewCheck("Impedir que el usuario desactive la ubicacion desde Configuracion  (recomendado)", 52, true);
+            _chkLockDown    = NewCheck("Impedir que el usuario desactive la ubicacion desde Configuracion (recomendado)", true);
             _chkLockDown.ForeColor = Color.FromArgb(120, 60, 0);
-            _chkGetPosition = NewCheck("Obtener coordenadas reales al verificar  (tarda hasta 20 s; util en el piloto)", 76, false);
+            _chkBrowsers    = NewCheck("Permitir la ubicacion en Chrome, Edge y Firefox sin preguntar (check-in de Zoho)", true);
+            _chkGetPosition = NewCheck("Obtener coordenadas reales al verificar (tarda hasta 20 s; util en el piloto)", false);
+            stack.Controls.Add(_chkLockDown);
+            stack.Controls.Add(_chkBrowsers);
+            stack.Controls.Add(_chkGetPosition);
 
-            panel.Controls.AddRange(new Control[] { intro, _chkLockDown, _chkGetPosition });
+            var activate = NewButton("ACTIVAR UBICACION",         Color.FromArgb(0, 120, 60),    Color.White);
+            var audit    = NewButton("Auditar  (no cambia nada)", Color.FromArgb(230, 230, 230), Color.Black);
+            var checkIn  = NewButton("Comprobar check-in Zoho",   Color.FromArgb(0, 90, 150),    Color.White);
+            var rollback = NewButton("Revertir",                  Color.FromArgb(150, 40, 40),   Color.White);
 
-            var buttons = new Panel { Dock = DockStyle.Top, Height = 56, Padding = new Padding(16, 6, 16, 6) };
+            var tip = new ToolTip();
+            tip.SetToolTip(activate,
+                "Un solo clic: arranca el servicio de ubicacion, activa el interruptor, el consentimiento de todos los\n" +
+                "usuarios, las politicas y el permiso de los navegadores; despues comprueba que el check-in funciona.");
+            tip.SetToolTip(audit,    "Muestra el estado actual sin modificar nada.");
+            tip.SetToolTip(checkIn,  "Recorre todo lo que necesita el check-in de Zoho y dice que falta. No modifica nada.");
+            tip.SetToolTip(rollback, "Deshace los cambios de registro que hizo el toolkit en este equipo.");
 
-            var audit    = NewButton("Auditar  (no cambia nada)", 0,   170, Color.FromArgb(230, 230, 230), Color.Black);
-            var apply    = NewButton("APLICAR UBICACION",         182, 170, Color.FromArgb(0, 120, 60),    Color.White);
-            var rollback = NewButton("Revertir",                  364, 110, Color.FromArgb(150, 40, 40),   Color.White);
-
-            audit.Click    += (s, e) => Execute("location", reportOnly: true);
-            apply.Click    += (s, e) => Execute("location", reportOnly: false);
+            activate.Click += (s, e) => ActivateLocation();
+            audit.Click    += async (s, e) => await Execute("location", reportOnly: true);
+            checkIn.Click  += async (s, e) => await Execute("location", reportOnly: true, checkIn: true);
             rollback.Click += (s, e) => Rollback();
 
-            buttons.Controls.AddRange(new Control[] { audit, apply, rollback });
+            stack.Controls.Add(NewButtonRow(activate, audit, checkIn, rollback));
 
-            tab.Controls.AddRange(new Control[] { buttons, panel });
+            tab.Controls.Add(stack);
             return tab;
         }
 
@@ -184,36 +249,40 @@ namespace Toolkit.App
         private TabPage BuildAppsTab()
         {
             var tab = NewTab("Aplicaciones");
+            tab.AutoScroll = false;
 
-            _appsHint = NewHint("Aplicaciones del catalogo. Marca las que quieras comprobar o instalar.", 0);
-            _appsHint.Dock = DockStyle.Top;
-            _appsHint.Height = 24;
-            _appsHint.Padding = new Padding(16, 6, 16, 0);
+            _appsHint = NewHint("Aplicaciones del catalogo. Marca las que quieras comprobar o instalar.");
 
             _apps = new CheckedListBox
             {
                 Dock = DockStyle.Fill,
                 CheckOnClick = true,
                 IntegralHeight = false,
-                Font = new Font("Segoe UI", 9F)
+                HorizontalScrollbar = true,
+                Margin = new Padding(0, 0, 0, 4)
             };
 
-            var buttons = new Panel { Dock = DockStyle.Bottom, Height = 56, Padding = new Padding(16, 6, 16, 6) };
-
-            var refresh = NewButton("Recargar catalogo",              0,   150, Color.FromArgb(230, 230, 230), Color.Black);
-            var audit   = NewButton("Comprobar instaladas",           162, 170, Color.FromArgb(230, 230, 230), Color.Black);
-            var apply   = NewButton("INSTALAR SELECCIONADAS",         344, 190, Color.FromArgb(0, 120, 60),    Color.White);
+            var refresh = NewButton("Recargar catalogo",      Color.FromArgb(230, 230, 230), Color.Black);
+            var audit   = NewButton("Comprobar instaladas",   Color.FromArgb(230, 230, 230), Color.Black);
+            var apply   = NewButton("INSTALAR SELECCIONADAS", Color.FromArgb(0, 120, 60),    Color.White);
 
             refresh.Click += async (s, e) => await RefreshApps();
-            audit.Click   += (s, e) => Execute("apps", reportOnly: true);
-            apply.Click   += (s, e) => Execute("apps", reportOnly: false);
+            audit.Click   += async (s, e) => await Execute("apps", reportOnly: true);
+            apply.Click   += async (s, e) => await Execute("apps", reportOnly: false);
 
-            buttons.Controls.AddRange(new Control[] { refresh, audit, apply });
+            // Tres filas: texto (auto), lista (todo el resto), botones (auto).
+            var grid = NewStack();
+            grid.Dock = DockStyle.Fill;
+            grid.AutoSize = false;
+            grid.RowCount = 3;
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grid.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            grid.Controls.Add(_appsHint, 0, 0);
+            grid.Controls.Add(_apps, 0, 1);
+            grid.Controls.Add(NewButtonRow(refresh, audit, apply), 0, 2);
 
-            var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 4, 16, 0) };
-            host.Controls.Add(_apps);
-
-            tab.Controls.AddRange(new Control[] { host, buttons, _appsHint });
+            tab.Controls.Add(grid);
             return tab;
         }
 
@@ -296,33 +365,37 @@ namespace Toolkit.App
         private TabPage BuildNetworkTab()
         {
             var tab = NewTab("Red");
+            var stack = NewStack();
 
-            var panel = new Panel { Dock = DockStyle.Top, Height = 120, Padding = new Padding(16, 12, 16, 8) };
-
-            var intro = NewHint(
+            stack.Controls.Add(NewHint(
                 "Mide latencia, jitter y perdida contra los destinos del catalogo, resuelve DNS, prueba puertos TCP, " +
-                "certificados TLS, MTU y proxy. No cambia nada en el equipo.", 8);
+                "certificados TLS, MTU y proxy. No cambia nada en el equipo."));
 
-            var lbl = new Label { Text = "Pings por destino:", Left = 16, Top = 58, AutoSize = true };
+            // Etiqueta + numero + pista en una fila que se parte si no cabe.
+            var row = new FlowLayoutPanel
+            {
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                WrapContents = true, Margin = new Padding(0, 4, 0, 4)
+            };
             _pingCount = new NumericUpDown
             {
-                Left = 140, Top = 55, Width = 70,
-                Minimum = 4, Maximum = 500, Value = 50
+                Width = 70, Minimum = 4, Maximum = 500, Value = 50,
+                Margin = new Padding(6, 0, 10, 0)
             };
-            var lblHint = new Label
+            row.Controls.Add(new Label { Text = "Pings por destino:", AutoSize = true, Margin = new Padding(0, 4, 0, 0) });
+            row.Controls.Add(_pingCount);
+            row.Controls.Add(new Label
             {
                 Text = "(50 tarda ~1 min; baja a 10 para un vistazo rapido)",
-                Left = 220, Top = 58, AutoSize = true, ForeColor = Color.DimGray
-            };
+                AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(0, 4, 0, 0)
+            });
+            stack.Controls.Add(row);
 
-            panel.Controls.AddRange(new Control[] { intro, lbl, _pingCount, lblHint });
+            var run = NewButton("EJECUTAR DIAGNOSTICO", Color.FromArgb(0, 90, 150), Color.White);
+            run.Click += async (s, e) => await Execute("network", reportOnly: true);
+            stack.Controls.Add(NewButtonRow(run));
 
-            var buttons = new Panel { Dock = DockStyle.Top, Height = 56, Padding = new Padding(16, 6, 16, 6) };
-            var run = NewButton("EJECUTAR DIAGNOSTICO", 0, 190, Color.FromArgb(0, 90, 150), Color.White);
-            run.Click += (s, e) => Execute("network", reportOnly: true);
-            buttons.Controls.Add(run);
-
-            tab.Controls.AddRange(new Control[] { buttons, panel });
+            tab.Controls.Add(stack);
             return tab;
         }
 
@@ -331,7 +404,8 @@ namespace Toolkit.App
         // -------------------------------------------------------------------
         private TabPage BuildUsersTab()
         {
-            var tab = new TabPage("Usuarios") { BackColor = Color.FromArgb(243, 243, 243) };
+            var tab = NewTab("Usuarios");
+            tab.AutoScroll = false;
 
             _users = new ListView
             {
@@ -341,7 +415,7 @@ namespace Toolkit.App
                 MultiSelect = false,
                 HideSelection = false,
                 GridLines = true,
-                Font = new Font("Segoe UI", 9F)
+                Margin = new Padding(0)
             };
             _users.Columns.Add("Usuario", 150);
             _users.Columns.Add("Estado", 95);
@@ -352,18 +426,28 @@ namespace Toolkit.App
             _users.Columns.Add("Perfil", 220);
             _users.SelectedIndexChanged += (s, e) => UpdateUserButtons();
             _users.DoubleClick += (s, e) => { if (_btnUserPwd.Enabled) ChangePassword(); };
+            // La ultima columna absorbe el ancho sobrante para no dejar un hueco gris.
+            _users.Resize += (s, e) => StretchLastColumn(_users);
 
-            var side = new Panel { Dock = DockStyle.Right, Width = 190, Padding = new Padding(8, 0, 0, 0) };
-            int y = 0;
+            // Botonera vertical: los botones se apilan y comparten anchura.
+            var side = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                Width = 182,
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom,   // alto = el de la fila; si no cabe, scroll
+                AutoScroll = true,
+                Margin = new Padding(8, 0, 0, 0)
+            };
             Func<string, Color, Color, Button> mk = (text, back, fore) =>
             {
                 var b = new Button
                 {
-                    Text = text, Left = 8, Top = y, Width = 178, Height = 32,
+                    Text = text, Width = 178, Height = 32,
                     BackColor = back, ForeColor = fore, FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+                    Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                    Margin = new Padding(0, 0, 0, 6)
                 };
-                y += 38;
                 return b;
             };
             var grey  = Color.FromArgb(230, 230, 230);
@@ -383,8 +467,13 @@ namespace Toolkit.App
 
             side.Controls.AddRange(new Control[] { _btnUsersRefresh, _btnUserNew, _btnUserPwd, _btnUserNoPwd, _btnUserToggle, _btnUserDelete });
 
-            var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8) };
-            host.Controls.AddRange(new Control[] { _users, side });
+            // Dos columnas: la lista se lleva todo el ancho, la botonera lo justo.
+            var host = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(8) };
+            host.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            host.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            host.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            host.Controls.Add(_users, 0, 0);
+            host.Controls.Add(side, 1, 0);
             tab.Controls.Add(host);
 
             UpdateUserButtons();
@@ -613,33 +702,104 @@ namespace Toolkit.App
         // -------------------------------------------------------------------
         //  Ejecucion de modulos (orquestador embebido)
         // -------------------------------------------------------------------
+        // Layout fluido: nada de coordenadas fijas. Cada pestana es una pila vertical
+        // (TableLayoutPanel de una columna) que se adapta al ancho; si el alto no
+        // alcanza, la pestana muestra scroll en vez de recortar.
+
         private static TabPage NewTab(string title) =>
-            new TabPage(title) { BackColor = Color.FromArgb(243, 243, 243) };
+            new TabPage(title) { BackColor = Color.FromArgb(243, 243, 243), AutoScroll = true, Padding = new Padding(0) };
 
-        private static Label NewHint(string text, int top) =>
-            new Label { Text = text, Top = top, Left = 16, Width = 800, Height = 36, ForeColor = Color.DimGray };
+        private static TableLayoutPanel NewStack()
+        {
+            var t = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 1,
+                Padding = new Padding(12, 10, 12, 4)
+            };
+            // Columna al 100 %: es lo que permite que las etiquetas se ajusten al ancho.
+            t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+            return t;
+        }
 
-        private CheckBox NewCheck(string text, int top, bool chk) =>
-            new CheckBox { Text = text, Top = top, Left = 16, Width = 640, Checked = chk, AutoSize = true };
+        /// <summary>Texto explicativo: ocupa el ancho disponible y se parte en lineas.</summary>
+        private static Label NewHint(string text) =>
+            new Label
+            {
+                Text = text,
+                AutoSize = true,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,   // en un TableLayoutPanel, esto = "ajusta y envuelve"
+                ForeColor = Color.DimGray,
+                Margin = new Padding(3, 0, 3, 10)
+            };
 
-        private Button NewButton(string text, int left, int width, Color back, Color fore)
+        private static CheckBox NewCheck(string text, bool chk) =>
+            new CheckBox { Text = text, Checked = chk, AutoSize = true, Margin = new Padding(3, 2, 3, 2) };
+
+        /// <summary>Boton que se dimensiona por su texto (asi no se recorta con otra fuente o DPI).</summary>
+        private Button NewButton(string text, Color back, Color fore)
         {
             var b = new Button
             {
-                Text = text, Left = left + 16, Top = 8, Width = width, Height = 34,
+                Text = text,
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(110, 34),
+                Padding = new Padding(10, 0, 10, 0),
                 BackColor = back, ForeColor = fore, FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold)
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                Margin = new Padding(0, 0, 10, 6)
             };
             _actionButtons.Add(b);
             return b;
         }
 
+        /// <summary>Fila de botones que pasa a dos lineas cuando la ventana es estrecha.</summary>
+        private static FlowLayoutPanel NewButtonRow(params Button[] buttons)
+        {
+            var row = new FlowLayoutPanel
+            {
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                WrapContents = true,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Margin = new Padding(0, 8, 0, 0)
+            };
+            row.Controls.AddRange(buttons);
+            return row;
+        }
+
+        private static void StretchLastColumn(ListView list)
+        {
+            if (list.Columns.Count == 0) return;
+            int used = 0;
+            for (int i = 0; i < list.Columns.Count - 1; i++) used += list.Columns[i].Width;
+            var last = list.Columns[list.Columns.Count - 1];
+            var free = list.ClientSize.Width - used;
+            if (free > 120) last.Width = free;
+        }
+
+        /// <summary>
+        /// Boton ACTIVAR UBICACION: aplica todo (servicio, interruptor, consentimiento,
+        /// politicas, navegadores) y, si fue bien, encadena la comprobacion del check-in
+        /// para que el tecnico vea el veredicto final sin pulsar nada mas.
+        /// </summary>
+        private async void ActivateLocation()
+        {
+            var code = await Execute("location", reportOnly: false);
+            if (code != 0 && code != Program.ExitRebootNeeded) return;   // cancelado o fallo: ya se aviso
+
+            Append(LogLevel.Info, "");
+            Append(LogLevel.Info, "Ubicacion activada. Comprobando ahora que el check-in de Zoho funciona...");
+            await Execute("location", reportOnly: true, checkIn: true, keepLog: true);
+        }
+
+        private const int ExitCancelled = -1;
+
         /// <summary>
         /// Ejecuta UN modulo del orquestador con las opciones de su pestana.
-        /// Cada pestana llama aqui con su propio nombre; el orquestador es el mismo
-        /// que usa el modo desatendido (/silent /modules:...).
+        /// Devuelve el codigo de salida (o ExitCancelled si el usuario no confirmo).
         /// </summary>
-        private async void Execute(string module, bool reportOnly)
+        private async Task<int> Execute(string module, bool reportOnly, bool checkIn = false, bool keepLog = false)
         {
             string[] apps = null;
             if (module == "apps")
@@ -649,7 +809,7 @@ namespace Toolkit.App
                 {
                     MessageBox.Show("Marca al menos una aplicacion de la lista.", "Toolkit",
                         MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
+                    return ExitCancelled;
                 }
             }
 
@@ -661,6 +821,7 @@ namespace Toolkit.App
                     case "location":
                         what = "Se va a activar la ubicacion en este equipo (servicio, registro y politicas)." +
                                (_chkLockDown.Checked ? "\nEl usuario NO podra desactivarla desde Configuracion." : "") +
+                               (_chkBrowsers.Checked ? "\nChrome, Edge y Firefox entregaran la ubicacion a los sitios sin preguntar." : "") +
                                "\n\nLos cambios de registro quedan registrados y son reversibles con 'Revertir'.";
                         break;
                     case "apps":
@@ -673,7 +834,7 @@ namespace Toolkit.App
                 }
                 var confirm = MessageBox.Show(what + "\n\n¿Continuar?",
                     "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (confirm != DialogResult.Yes) return;
+                if (confirm != DialogResult.Yes) return ExitCancelled;
             }
 
             // Las opciones se leen aqui, en el hilo de la UI, antes de irse al hilo de trabajo.
@@ -686,14 +847,16 @@ namespace Toolkit.App
                 ReportOnly  = reportOnly,
                 Silent      = false,
                 NoLockDown  = !_chkLockDown.Checked,
+                NoBrowsers  = !_chkBrowsers.Checked,
+                CheckIn     = checkIn,
                 GetPosition = _chkGetPosition.Checked,
                 PingCount   = (int)_pingCount.Value,
                 // El tecnico esta delante: no tiene sentido aplazar a la ventana nocturna.
                 IgnoreMaintenanceWindow = true
             };
 
-            SetBusy(true, reportOnly ? "Auditando..." : "Aplicando cambios...");
-            _log.Clear();
+            SetBusy(true, checkIn ? "Comprobando el check-in de Zoho..." : reportOnly ? "Auditando..." : "Aplicando cambios...");
+            if (!keepLog) _log.Clear();
 
             var exitCode = await Task.Run(() =>
             {
@@ -718,13 +881,17 @@ namespace Toolkit.App
                 }
             });
 
-            SetBusy(false, DescribeExit(exitCode));
+            var verdict = checkIn
+                ? (exitCode == 0 ? "Check-in de Zoho: el equipo esta listo." : "Check-in de Zoho: NO va a funcionar todavia.")
+                : DescribeExit(exitCode);
+            SetBusy(false, verdict);
 
             if (exitCode != 0 && exitCode != Program.ExitRebootNeeded)
             {
-                MessageBox.Show(DescribeExit(exitCode) + "\n\nRevisa el log para el detalle.",
+                MessageBox.Show(verdict + "\n\nRevisa el log para el detalle.",
                     "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
+            return exitCode;
         }
 
         private async void Rollback()

@@ -27,7 +27,9 @@ param(
     [ValidateSet('location', 'apps', 'network', 'users')][string[]]$Modules,
     [string[]]$Apps,
     [switch]$Report,
+    [switch]$CheckIn,
     [switch]$NoLockDown,
+    [switch]$NoBrowsers,
     [switch]$Rollback,
     [string]$ConfigPath,
     [string]$SharePath,
@@ -88,7 +90,7 @@ if ($Rollback) {
 #  Invocacion del orquestador compartido
 # ---------------------------------------------------------------------------
 function Invoke-Run {
-    param([string[]]$Mods, [switch]$AsReport)
+    param([string[]]$Mods, [switch]$AsReport, [switch]$AsCheckIn)
 
     $splat = @{
         Modules    = $Mods
@@ -97,6 +99,8 @@ function Invoke-Run {
         ReportOnly = $AsReport
         Silent     = $Silent
         NoLockDown = $NoLockDown
+        NoBrowsers = $NoBrowsers
+        CheckIn    = $AsCheckIn
     }
     if ($Apps)      { $splat.Apps = $Apps }
     if ($SharePath) { $splat.SharePath = $SharePath }
@@ -115,7 +119,7 @@ function Show-Menu {
         $mi = Get-MachineInfo
         Write-Host ''
         Write-Host '  ############################################################' -ForegroundColor Cyan
-        Write-Host ('  #  TOOLKIT CALL CENTER  v{0,-33}#' -f (Get-ToolkitVersion))  -ForegroundColor Cyan
+        Write-Host ('  #  TOOLKIT BPO  v{0,-41}#' -f (Get-ToolkitVersion))  -ForegroundColor Cyan
         Write-Host '  #  (modo scripts - en produccion se usa Toolkit.exe)       #' -ForegroundColor DarkCyan
         Write-Host '  ############################################################' -ForegroundColor Cyan
         Write-Host ('   Equipo : {0}   ({1} {2})' -f $mi.ComputerName, $mi.OSCaption, $mi.DisplayVersion) -ForegroundColor DarkGray
@@ -123,6 +127,7 @@ function Show-Menu {
         Write-Host ''
         Write-Host '   --- DIAGNOSTICO (no modifica nada) ---' -ForegroundColor Gray
         Write-Host '    1) Estado de la ubicacion'
+        Write-Host '    Z) Comprobar check-in de Zoho (ubicacion en el navegador)'
         Write-Host '    2) Inventario de aplicaciones'
         Write-Host '    3) Diagnostico de red completo'
         Write-Host '    4) Auditoria completa del equipo'
@@ -143,6 +148,7 @@ function Show-Menu {
 
         switch ((Read-Host '   Opcion').Trim().ToUpper()) {
             '1' { Show-LocationState -State (Test-LocationState); Wait-Key }
+            'Z' { Invoke-Run -Mods @('location') -AsReport -AsCheckIn    | Out-Null; Wait-Key }
             '2' { Show-AppInventory  -Catalog $config;            Wait-Key }
             '3' { Invoke-Run -Mods @('network')                    | Out-Null; Wait-Key }
             '4' { Invoke-Run -Mods @('location','apps','network','users') -AsReport | Out-Null; Wait-Key }
@@ -254,7 +260,8 @@ function Wait-Key {
 #  Principal
 # ---------------------------------------------------------------------------
 $selected = @()
-if     ($All)     { $selected = @('location', 'apps', 'network', 'users') }
+if     ($CheckIn) { $selected = @('location'); $Report = $true }
+elseif ($All)     { $selected = @('location', 'apps', 'network', 'users') }
 elseif ($Modules) { $selected = $Modules }
 elseif ($Report)  { $selected = @('location', 'apps', 'network', 'users') }
 
@@ -268,5 +275,5 @@ if ($selected.Count -eq 0) {
     exit 1
 }
 
-$result = Invoke-Run -Mods $selected -AsReport:$Report
+$result = Invoke-Run -Mods $selected -AsReport:$Report -AsCheckIn:$CheckIn
 exit $(if ($result -and $result.ExitCode -ne $null) { $result.ExitCode } else { 1 })

@@ -1,4 +1,4 @@
-# Toolkit
+# Toolkit BPO
 
 Utilidad portable para Windows 10/11 que resuelve, desde una sola ventana, cuatro tareas que normalmente hay que hacer a mano y en varios sitios:
 
@@ -17,7 +17,7 @@ Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a un
 2. Haz doble clic. Pedirá permisos de administrador: son necesarios porque toca servicios, registro y cuentas.
 3. Cada cosa tiene su pestaña: **Ubicación**, **Aplicaciones**, **Red** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; el log de abajo es común.
 4. En Ubicación y Aplicaciones, pulsa primero **Auditar** / **Comprobar instaladas**. No cambia nada; solo muestra el estado. Empieza siempre por ahí.
-5. Cuando lo tengas claro, pulsa **Aplicar ubicación** o **Instalar seleccionadas**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
+5. Cuando lo tengas claro, pulsa **Activar ubicación** (activa el servicio, las políticas, los usuarios y los navegadores, y al terminar comprueba el check-in) o **Instalar seleccionadas**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
 
 Si algo no te convence, **Revertir** (en la pestaña Ubicación) deshace todos los cambios de registro que hizo el toolkit en ese equipo. Las instalaciones de aplicaciones no se revierten.
 
@@ -35,6 +35,17 @@ Activar la ubicación en Windows no es un solo interruptor: hay cuatro capas y, 
 4. Políticas para que nadie la desactive desde Configuración (opción *Impedir que el usuario desactive la ubicación*, marcada por defecto).
 
 **Por qué no hace falta reiniciar:** el servicio de ubicación solo lee su configuración al arrancar. Por eso muchas guías terminan con "reinicia el equipo". El toolkit, en lugar de eso, reinicia el servicio y a continuación pregunta a la API de geolocalización de Windows si responde. Nadie pierde la sesión.
+
+#### Check-in de Zoho en el navegador
+
+El motivo de todo esto es que los agentes hagan **check-in en Zoho People desde el navegador**, y ahí hacen falta dos cosas más que Windows no resuelve:
+
+- **Permiso del navegador.** Aunque Windows tenga la ubicación activa, el navegador pregunta "zoho.com quiere conocer tu ubicación" y, si el agente pulsa *Bloquear* una vez, el check-in deja de funcionar en ese perfil sin ningún aviso. *Activar ubicación* escribe la política de Chrome y Edge (`DefaultGeolocationSetting = 1`, permitir sin preguntar) y la lista de sitios permitidos de Firefox. Chrome y Edge la aplican al momento; Firefox al reiniciarse. Se puede desmarcar en la pestaña (o `/nobrowsers`).
+- **Precisión.** Sin GPS, Windows ubica por las redes Wi-Fi cercanas (decenas de metros) o, si el equipo no tiene adaptador Wi-Fi, por la IP pública (kilómetros). Si Zoho tiene una geovalla, un equipo de sobremesa sin Wi-Fi hará check-in fuera del radio aunque todo esté "activado". No hace falta *conectar* el Wi-Fi: basta con que el adaptador exista y esté habilitado para que escanee.
+
+El botón **Comprobar check-in Zoho** (o `Toolkit.exe /checkin`) recorre en orden todo lo que tiene que estar bien y dice si el equipo está listo o qué falta: capas de Windows, política de cada navegador instalado, adaptador Wi-Fi, posición real con su precisión, y conectividad (DNS + 443) hacia Zoho y hacia el servicio de posicionamiento de Microsoft. No modifica nada.
+
+Los sitios de Zoho y la precisión máxima aceptable se ajustan en `catalog.json` → `location.checkIn` (si tu Zoho está en el centro de datos europeo, cambia `.com` por `.eu`).
 
 ### Usuarios
 
@@ -68,6 +79,7 @@ La misma lógica está disponible sin interfaz, para scripts o tareas programada
 Toolkit.exe                                # interfaz gráfica
 Toolkit.exe /report                        # auditoría completa, no modifica nada
 Toolkit.exe /report /modules:users         # solo el inventario de cuentas
+Toolkit.exe /checkin                       # ¿funcionará el check-in de Zoho con ubicación? no modifica nada
 Toolkit.exe /silent /all                   # aplica todo sin preguntar
 Toolkit.exe /silent /modules:location      # solo la ubicación
 Toolkit.exe /silent /apps:ejemplo-7zip     # solo esas apps del catálogo
@@ -91,7 +103,12 @@ Toda la configuración está en un solo archivo, `catalog.json`. El exe lleva un
   "location": {
     "lockDown": true,        // impedir que el usuario desactive la ubicación
     "verifyWithApi": true,   // preguntar a Windows si la ubicación responde tras aplicar
-    "getPosition": false     // true = obtener coordenadas reales (tarda hasta 20 s)
+    "getPosition": false,    // true = obtener coordenadas reales (tarda hasta 20 s)
+    "checkIn": {
+      "browserPolicy": true, // dar permiso de ubicación a Chrome/Edge/Firefox
+      "urls": [ "https://people.zoho.com", "https://accounts.zoho.com" ],
+      "maxAccuracyMeters": 500 // precisión mínima aceptable; ajustar al radio de la geovalla de Zoho
+    }
   },
   "network": {
     "pingTargets": [ { "label": "Internet", "host": "8.8.8.8" } ],
@@ -125,6 +142,8 @@ cd build
 ```
 
 Deja el resultado en `dist\Toolkit.exe` junto con su SHA-256.
+
+El logo vive en `assets\logo.svg`. Si lo cambias, regenera el icono del exe y de las ventanas con `scripts\tools\New-Logo.ps1` (renderiza el SVG con el Edge que trae Windows y produce `assets\logo.ico` y `assets\logo.png`); el `.ico` se versiona porque es lo que compila.
 
 Cómo está montado, en una línea: el exe es un envase en C# que lleva embebidos unos módulos de PowerShell (`scripts\modules\`) y los ejecuta en memoria, sin escribirlos en disco. Eso evita problemas de `ExecutionPolicy`, de antivirus bloqueando scripts sueltos y de scripts editados por ahí. Para desarrollar sin recompilar, `scripts\Toolkit.ps1` ejecuta exactamente los mismos módulos desde un menú de consola.
 

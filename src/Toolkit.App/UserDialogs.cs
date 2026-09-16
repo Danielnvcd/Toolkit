@@ -16,8 +16,11 @@ namespace Toolkit.App
         public PasswordDialog(string title, string userName)
         {
             Text = title;
-            Size = new Size(400, 200);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            ClientSize = new Size(384, 160);
             FormBorderStyle = FormBorderStyle.FixedDialog;
+            if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = MinimizeBox = false;
             Font = new Font("Segoe UI", 9F);
@@ -67,8 +70,11 @@ namespace Toolkit.App
         public NewUserDialog()
         {
             Text = "Nuevo usuario local";
-            Size = new Size(420, 320);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            ClientSize = new Size(404, 280);
             FormBorderStyle = FormBorderStyle.FixedDialog;
+            if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = MinimizeBox = false;
             Font = new Font("Segoe UI", 9F);

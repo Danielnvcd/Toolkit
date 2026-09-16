@@ -10,7 +10,14 @@
     "_lockDown_comment": "true = aplica LetAppsAccessLocation=1: el usuario NO puede desactivar la ubicacion desde Configuracion. Imprescindible en areas donde los agentes son administradores locales.",
     "verifyWithApi": true,
     "getPosition": false,
-    "_getPosition_comment": "true = intenta obtener coordenadas reales. Util en el piloto para validar precision (E911). Tarda hasta 20 s."
+    "_getPosition_comment": "true = intenta obtener coordenadas reales. Util en el piloto para validar precision. Tarda hasta 20 s.",
+    "checkIn": {
+      "_comment": "Check-in de Zoho desde el navegador. urls = origenes a los que el navegador entregara la ubicacion (Firefox usa la lista tal cual; Chrome y Edge no admiten lista por sitio y se permite a todos). Si tu Zoho esta en otro centro de datos, cambia .com por .eu / .in / .com.au.",
+      "browserPolicy": true,
+      "urls": [ "https://people.zoho.com", "https://accounts.zoho.com" ],
+      "maxAccuracyMeters": 500,
+      "_maxAccuracyMeters_comment": "Precision maxima aceptable. Ajustar al radio de la geovalla configurada en Zoho People."
+    }
   },
 
   "network": {

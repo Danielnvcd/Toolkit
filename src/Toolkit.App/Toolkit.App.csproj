@@ -11,7 +11,10 @@
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Version>0.1.0</Version>
     <Company>Call Center IT</Company>
-    <Product>Toolkit Call Center</Product>
+    <Product>Toolkit BPO</Product>
+    <AssemblyTitle>Toolkit BPO</AssemblyTitle>
+    <!-- Icono del exe (Explorador, barra de tareas). Se genera desde assets\logo.svg con scripts\tools\New-Logo.ps1 -->
+    <ApplicationIcon>..\..\assets\logo.ico</ApplicationIcon>
     <!-- Sin ventana de consola propia: en modo CLI se engancha a la del padre (Program.cs) -->
     <DebugType>embedded</DebugType>
 
@@ -61,6 +64,8 @@
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Users.psm1"    LogicalName="Scripts/Toolkit.Users.psm1" />
     <EmbeddedResource Include="..\..\scripts\Invoke-ToolkitRun.ps1"         LogicalName="Scripts/Invoke-ToolkitRun.ps1" />
     <EmbeddedResource Include="..\..\scripts\config\catalog.json"           LogicalName="Scripts/catalog.json" />
+    <!-- El mismo icono, embebido para las ventanas (titulo, Alt+Tab, cabecera). -->
+    <EmbeddedResource Include="..\..\assets\logo.ico"                        LogicalName="Assets/logo.ico" />
   </ItemGroup>
 
 </Project>

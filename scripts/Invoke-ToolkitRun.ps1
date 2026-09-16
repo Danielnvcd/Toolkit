@@ -31,6 +31,8 @@ param(
     [string]$SharePath,
     [string]$Root = 'C:\ProgramData\Toolkit',
     [switch]$NoLockDown,
+    [switch]$NoBrowsers,
+    [switch]$CheckIn,
     [switch]$GetPosition,
     [int]$PingCount = 0,
     [switch]$IgnoreMaintenanceWindow
@@ -74,6 +76,32 @@ if (-not $ReportOnly) {
 function Invoke-ModuleLocation {
     Write-Step 'MODULO A - UBICACION'
 
+    # Bloque checkIn del catalogo: sitios del check-in y precision exigida.
+    $checkInUrls = $null
+    $maxAccuracy = 500
+    $browserPolicy = $true
+    if ($config.location.PSObject.Properties.Name -contains 'checkIn' -and $config.location.checkIn) {
+        $ci = $config.location.checkIn
+        if ($ci.PSObject.Properties.Name -contains 'urls' -and $ci.urls)               { $checkInUrls = @($ci.urls) }
+        if ($ci.PSObject.Properties.Name -contains 'maxAccuracyMeters' -and $ci.maxAccuracyMeters) { $maxAccuracy = [int]$ci.maxAccuracyMeters }
+        if ($ci.PSObject.Properties.Name -contains 'browserPolicy')                    { $browserPolicy = [bool]$ci.browserPolicy }
+    }
+    $ciSplat = @{}
+    if ($checkInUrls) { $ciSplat.Urls = $checkInUrls }
+
+    # -CheckIn: comprobacion de extremo a extremo del check-in de Zoho. Solo lectura.
+    if ($CheckIn) {
+        Write-Log 'Comprobacion del check-in de Zoho (ubicacion en el navegador)' -Level INFO
+        $r = Test-CheckInReadiness @ciSplat -MaxAccuracyMeters $maxAccuracy
+        Add-Result -Module 'Location' -Task 'Check-in Zoho' `
+                   -Status $(if (-not $r.Ready) { 'FALLO' } elseif ($r.Warnings.Count -gt 0) { 'AVISO' } else { 'OK' }) `
+                   -Message $(if (-not $r.Ready) { ('{0} problema(s)' -f $r.Issues.Count) }
+                              elseif ($r.Warnings.Count -gt 0) { ('Listo con {0} aviso(s)' -f $r.Warnings.Count) }
+                              else { 'Listo para el check-in' }) `
+                   -Detail $r
+        return
+    }
+
     $before = Test-LocationState
     if (-not $Silent) { Show-LocationState -State $before }
 
@@ -82,18 +110,37 @@ function Invoke-ModuleLocation {
                    -Status $(if ($before.Compliant) { 'OK' } else { 'AVISO' }) `
                    -Message $(if ($before.Compliant) { 'Conforme' } else { ('{0} problema(s)' -f $before.Issues.Count) }) `
                    -Detail $before
+
+        if ($browserPolicy -and -not $NoBrowsers) {
+            $browsers = @(Test-BrowserGeolocation @ciSplat)
+            $bad = @($browsers | Where-Object { $_.Installed -and -not $_.Compliant })
+            foreach ($b in $browsers) {
+                if ($b.Compliant) { Write-Log ("  + {0}: politica de ubicacion OK{1}" -f $b.Name, $(if ($b.Installed) { '' } else { ' (no instalado)' })) -Level $(if ($b.Installed) { 'OK' } else { 'DEBUG' }) }
+                else { foreach ($i in $b.Issues) { Write-Log "  ! $i" -Level $(if ($b.Installed) { 'WARN' } else { 'DEBUG' }) } }
+            }
+            Add-Result -Module 'Location' -Task 'Navegadores (check-in)' `
+                       -Status $(if ($bad.Count -eq 0) { 'OK' } else { 'AVISO' }) `
+                       -Message $(if ($bad.Count -eq 0) { 'Politicas correctas' } else { ('{0} navegador(es) sin politica' -f $bad.Count) }) `
+                       -Detail $browsers
+        }
     } else {
         $lockDown = $true
         if ($config.location.PSObject.Properties.Name -contains 'lockDown') { $lockDown = [bool]$config.location.lockDown }
         if ($NoLockDown) { $lockDown = $false }
         Enable-LocationService -LockDown:$lockDown | Out-Null
+
+        if ($browserPolicy -and -not $NoBrowsers) {
+            Enable-BrowserGeolocation @ciSplat | Out-Null
+        } else {
+            Write-Log 'Navegadores: politica de ubicacion omitida (checkIn.browserPolicy=false o -NoBrowsers).' -Level WARN
+        }
     }
 
     # El registro correcto NO garantiza que funcione: hay que preguntarle a la API.
     if ($config.location.verifyWithApi) {
         Write-Log 'Verificacion contra la API de geolocalizacion...' -Level INFO
         # -GetPosition (GUI) fuerza coordenadas reales aunque el catalogo diga que no.
-        $api = Test-LocationApi -GetPosition:($GetPosition -or [bool]$config.location.getPosition)
+        $api = Test-LocationApi -GetPosition:($GetPosition -or [bool]$config.location.getPosition) -MaxAccuracyMeters $maxAccuracy
         if ($api.ApiAvailable -and $api.LocationStatus -in @('Disabled', 'NotAvailable')) {
             Add-Result -Module 'Location' -Task 'Verificacion API' -Status 'FALLO' `
                        -Message "API en estado $($api.LocationStatus)" -Detail $api

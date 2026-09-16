@@ -97,6 +97,8 @@ namespace Toolkit.App
                     ReportOnly              = args.ReportOnly,
                     Silent                  = args.Silent,
                     NoLockDown              = args.NoLockDown,
+                    NoBrowsers              = args.NoBrowsers,
+                    CheckIn                 = args.CheckIn,
                     IgnoreMaintenanceWindow = args.Force
                 };
 

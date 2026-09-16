@@ -117,6 +117,8 @@ namespace Toolkit.App
                 if (options.ReportOnly)              ps.AddParameter("ReportOnly", true);
                 if (options.Silent)                  ps.AddParameter("Silent", true);
                 if (options.NoLockDown)              ps.AddParameter("NoLockDown", true);
+                if (options.NoBrowsers)              ps.AddParameter("NoBrowsers", true);
+                if (options.CheckIn)                 ps.AddParameter("CheckIn", true);
                 if (options.GetPosition)             ps.AddParameter("GetPosition", true);
                 if (options.PingCount > 0)           ps.AddParameter("PingCount", options.PingCount);
                 if (options.IgnoreMaintenanceWindow) ps.AddParameter("IgnoreMaintenanceWindow", true);
@@ -239,6 +241,10 @@ namespace Toolkit.App
         public bool ReportOnly { get; set; }
         public bool Silent { get; set; }
         public bool NoLockDown { get; set; }
+        /// <summary>No tocar las politicas de geolocalizacion de Chrome/Edge/Firefox.</summary>
+        public bool NoBrowsers { get; set; }
+        /// <summary>Comprobacion de extremo a extremo del check-in de Zoho (solo lectura).</summary>
+        public bool CheckIn { get; set; }
         /// <summary>Pedir coordenadas reales al verificar la ubicacion (tarda hasta 20 s).</summary>
         public bool GetPosition { get; set; }
         /// <summary>Pings por destino en el diagnostico de red; 0 = lo que diga el catalogo.</summary>
