@@ -1,0 +1,19 @@
+# Salida de compilacion (.NET)
+src/**/bin/
+src/**/obj/
+dist/
+
+# Firma: nunca subir certificados ni claves
+*.pfx
+*.snk
+
+# Visual Studio / Rider / VS Code
+.vs/
+.idea/
+*.user
+*.suo
+
+# Temporales
+*.log
+*.tmp
+Thumbs.db

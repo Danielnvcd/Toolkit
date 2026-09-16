@@ -15,10 +15,11 @@ Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a un
 
 1. Copia `Toolkit.exe` al equipo (o ejecútalo directamente desde el USB).
 2. Haz doble clic. Pedirá permisos de administrador: son necesarios porque toca servicios, registro y cuentas.
-3. Pulsa **Auditar**. No cambia nada; solo muestra el estado del equipo. Empieza siempre por ahí.
-4. Marca lo que quieras aplicar y pulsa **Aplicar cambios**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
+3. Cada cosa tiene su pestaña: **Ubicación**, **Aplicaciones**, **Red** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; el log de abajo es común.
+4. En Ubicación y Aplicaciones, pulsa primero **Auditar** / **Comprobar instaladas**. No cambia nada; solo muestra el estado. Empieza siempre por ahí.
+5. Cuando lo tengas claro, pulsa **Aplicar ubicación** o **Instalar seleccionadas**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
 
-Si algo no te convence, **Revertir** deshace todos los cambios de registro que hizo el toolkit en ese equipo.
+Si algo no te convence, **Revertir** (en la pestaña Ubicación) deshace todos los cambios de registro que hizo el toolkit en ese equipo. Las instalaciones de aplicaciones no se revierten.
 
 ---
 

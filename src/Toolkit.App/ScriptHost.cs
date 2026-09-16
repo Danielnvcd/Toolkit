@@ -117,9 +117,11 @@ namespace Toolkit.App
                 if (options.ReportOnly)              ps.AddParameter("ReportOnly", true);
                 if (options.Silent)                  ps.AddParameter("Silent", true);
                 if (options.NoLockDown)              ps.AddParameter("NoLockDown", true);
+                if (options.GetPosition)             ps.AddParameter("GetPosition", true);
+                if (options.PingCount > 0)           ps.AddParameter("PingCount", options.PingCount);
                 if (options.IgnoreMaintenanceWindow) ps.AddParameter("IgnoreMaintenanceWindow", true);
 
-                Collection<PSObject> results;
+                PSDataCollection<PSObject> results;
                 try
                 {
                     // Tiempo limite global. Sin esto, un instalador de terceros que
@@ -237,6 +239,10 @@ namespace Toolkit.App
         public bool ReportOnly { get; set; }
         public bool Silent { get; set; }
         public bool NoLockDown { get; set; }
+        /// <summary>Pedir coordenadas reales al verificar la ubicacion (tarda hasta 20 s).</summary>
+        public bool GetPosition { get; set; }
+        /// <summary>Pings por destino en el diagnostico de red; 0 = lo que diga el catalogo.</summary>
+        public int PingCount { get; set; }
         public bool IgnoreMaintenanceWindow { get; set; }
     }
 }

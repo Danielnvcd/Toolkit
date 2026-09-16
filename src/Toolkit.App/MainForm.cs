@@ -13,6 +13,10 @@ namespace Toolkit.App
     /// por debajo llama al mismo Invoke-ToolkitRun.ps1 embebido, de modo que
     /// GUI y despliegue masivo no pueden divergir.
     ///
+    /// Cada modulo tiene su propia pestana (Ubicacion, Aplicaciones, Red,
+    /// Usuarios) con sus opciones y sus botones: el tecnico ejecuta una cosa
+    /// cada vez y ve en el log de abajo solo lo que pidio.
+    ///
     /// La pestana "Usuarios" es la excepcion deliberada: cambiar contrasenas o
     /// borrar cuentas es interactivo por naturaleza y no se despliega en masa.
     /// Llama directamente a las funciones de Toolkit.Users.psm1.
@@ -21,13 +25,25 @@ namespace Toolkit.App
     {
         private readonly CommandLineArgs _args;
 
-        private CheckBox _chkLocation, _chkApps, _chkNetwork, _chkUsers, _chkLockDown;
-        private Button _btnAudit, _btnApply, _btnRollback;
         private RichTextBox _log;
         private Label _status;
         private ProgressBar _progress;
         private TabControl _tabs;
-        private TabPage _tabUsers;
+        private TabPage _tabApps, _tabUsers;
+
+        // Botones que lanzan una ejecucion; se bloquean todos mientras hay una en curso.
+        private readonly List<Button> _actionButtons = new List<Button>();
+
+        // Pestana Ubicacion
+        private CheckBox _chkLockDown, _chkGetPosition;
+
+        // Pestana Aplicaciones
+        private CheckedListBox _apps;
+        private Label _appsHint;
+        private bool _appsLoaded;
+
+        // Pestana Red
+        private NumericUpDown _pingCount;
 
         // Pestana Usuarios
         private ListView _users;
@@ -69,12 +85,18 @@ namespace Toolkit.App
             };
 
             _tabs = new TabControl { Dock = DockStyle.Fill };
-            _tabs.TabPages.Add(BuildConfigTab());
+            _tabApps  = BuildAppsTab();
             _tabUsers = BuildUsersTab();
+            _tabs.TabPages.Add(BuildLocationTab());
+            _tabs.TabPages.Add(_tabApps);
+            _tabs.TabPages.Add(BuildNetworkTab());
             _tabs.TabPages.Add(_tabUsers);
+            // Las listas se cargan la primera vez que se abre la pestana: abrir un
+            // runspace cuesta un segundo y no tiene sentido pagarlo al arrancar.
             _tabs.SelectedIndexChanged += async (s, e) =>
             {
                 if (_tabs.SelectedTab == _tabUsers && !_usersLoaded) await RefreshUsers();
+                if (_tabs.SelectedTab == _tabApps  && !_appsLoaded)  await RefreshApps();
             };
 
             _log = new RichTextBox
@@ -95,8 +117,8 @@ namespace Toolkit.App
             {
                 Dock = DockStyle.Fill,
                 Orientation = Orientation.Horizontal,
-                SplitterDistance = 270,
-                Panel1MinSize = 200,
+                SplitterDistance = 290,
+                Panel1MinSize = 220,
                 Panel2MinSize = 120
             };
             var tabHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 8, 16, 4) };
@@ -122,34 +144,183 @@ namespace Toolkit.App
         }
 
         // -------------------------------------------------------------------
-        //  Pestana Configuracion (ubicacion / apps / red)
+        //  Pestana Ubicacion
         // -------------------------------------------------------------------
-        private TabPage BuildConfigTab()
+        private TabPage BuildLocationTab()
         {
-            var tab = new TabPage("Configuracion") { BackColor = Color.FromArgb(243, 243, 243) };
+            var tab = NewTab("Ubicacion");
 
-            var panel = new Panel { Dock = DockStyle.Top, Height = 158, Padding = new Padding(16, 12, 16, 8) };
+            var panel = new Panel { Dock = DockStyle.Top, Height = 132, Padding = new Padding(16, 12, 16, 8) };
 
-            _chkLocation = NewCheck("Ubicacion  (servicio lfsvc + politicas + todos los perfiles; aplica sin reiniciar)", 8, true);
-            _chkApps     = NewCheck("Aplicaciones  (instalacion desatendida del catalogo)",          32, true);
-            _chkNetwork  = NewCheck("Diagnostico de red  (latencia, jitter, perdida, DNS, MTU)",     56, true);
-            _chkUsers    = NewCheck("Inventario de usuarios locales  (solo lectura; la gestion esta en la pestana Usuarios)", 80, true);
-            _chkLockDown = NewCheck("Impedir que el usuario desactive la ubicacion  (recomendado)",  110, true);
+            var intro = NewHint(
+                "Activa el servicio de ubicacion (lfsvc), el interruptor del sistema, el consentimiento de todos los " +
+                "perfiles del equipo y las politicas. Se aplica sin reiniciar.", 8);
+
+            _chkLockDown    = NewCheck("Impedir que el usuario desactive la ubicacion desde Configuracion  (recomendado)", 52, true);
             _chkLockDown.ForeColor = Color.FromArgb(120, 60, 0);
+            _chkGetPosition = NewCheck("Obtener coordenadas reales al verificar  (tarda hasta 20 s; util en el piloto)", 76, false);
 
-            panel.Controls.AddRange(new Control[] { _chkLocation, _chkApps, _chkNetwork, _chkUsers, _chkLockDown });
+            panel.Controls.AddRange(new Control[] { intro, _chkLockDown, _chkGetPosition });
 
             var buttons = new Panel { Dock = DockStyle.Top, Height = 56, Padding = new Padding(16, 6, 16, 6) };
 
-            _btnAudit    = NewButton("Auditar  (no cambia nada)", 0,   170, Color.FromArgb(230, 230, 230), Color.Black);
-            _btnApply    = NewButton("APLICAR CAMBIOS",           182, 170, Color.FromArgb(0, 120, 60),    Color.White);
-            _btnRollback = NewButton("Revertir",                  364, 110, Color.FromArgb(150, 40, 40),   Color.White);
+            var audit    = NewButton("Auditar  (no cambia nada)", 0,   170, Color.FromArgb(230, 230, 230), Color.Black);
+            var apply    = NewButton("APLICAR UBICACION",         182, 170, Color.FromArgb(0, 120, 60),    Color.White);
+            var rollback = NewButton("Revertir",                  364, 110, Color.FromArgb(150, 40, 40),   Color.White);
 
-            _btnAudit.Click    += (s, e) => Execute(reportOnly: true);
-            _btnApply.Click    += (s, e) => Execute(reportOnly: false);
-            _btnRollback.Click += (s, e) => Rollback();
+            audit.Click    += (s, e) => Execute("location", reportOnly: true);
+            apply.Click    += (s, e) => Execute("location", reportOnly: false);
+            rollback.Click += (s, e) => Rollback();
 
-            buttons.Controls.AddRange(new Control[] { _btnAudit, _btnApply, _btnRollback });
+            buttons.Controls.AddRange(new Control[] { audit, apply, rollback });
+
+            tab.Controls.AddRange(new Control[] { buttons, panel });
+            return tab;
+        }
+
+        // -------------------------------------------------------------------
+        //  Pestana Aplicaciones
+        // -------------------------------------------------------------------
+        private TabPage BuildAppsTab()
+        {
+            var tab = NewTab("Aplicaciones");
+
+            _appsHint = NewHint("Aplicaciones del catalogo. Marca las que quieras comprobar o instalar.", 0);
+            _appsHint.Dock = DockStyle.Top;
+            _appsHint.Height = 24;
+            _appsHint.Padding = new Padding(16, 6, 16, 0);
+
+            _apps = new CheckedListBox
+            {
+                Dock = DockStyle.Fill,
+                CheckOnClick = true,
+                IntegralHeight = false,
+                Font = new Font("Segoe UI", 9F)
+            };
+
+            var buttons = new Panel { Dock = DockStyle.Bottom, Height = 56, Padding = new Padding(16, 6, 16, 6) };
+
+            var refresh = NewButton("Recargar catalogo",              0,   150, Color.FromArgb(230, 230, 230), Color.Black);
+            var audit   = NewButton("Comprobar instaladas",           162, 170, Color.FromArgb(230, 230, 230), Color.Black);
+            var apply   = NewButton("INSTALAR SELECCIONADAS",         344, 190, Color.FromArgb(0, 120, 60),    Color.White);
+
+            refresh.Click += async (s, e) => await RefreshApps();
+            audit.Click   += (s, e) => Execute("apps", reportOnly: true);
+            apply.Click   += (s, e) => Execute("apps", reportOnly: false);
+
+            buttons.Controls.AddRange(new Control[] { refresh, audit, apply });
+
+            var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 4, 16, 0) };
+            host.Controls.Add(_apps);
+
+            tab.Controls.AddRange(new Control[] { host, buttons, _appsHint });
+            return tab;
+        }
+
+        private sealed class AppRow
+        {
+            public string Id, Name, Version;
+            public bool Enabled;
+            public override string ToString() =>
+                Name + (string.IsNullOrEmpty(Version) || Version == "0.0.0" ? "" : "  v" + Version) +
+                (Enabled ? "" : "   (desactivada en el catalogo: enabled=false)");
+        }
+
+        /// <summary>
+        /// Lee las apps del catalogo con el mismo runspace de la pestana Usuarios.
+        /// Se hace en PowerShell (ConvertFrom-Json) para no meter un parser JSON en el exe.
+        /// </summary>
+        private async Task RefreshApps()
+        {
+            SetBusy(true, "Leyendo catalogo de aplicaciones...");
+            var rows = new List<AppRow>();
+            string origin = null, error = null;
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    var catalog = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
+                    var result = UsersHost().Invoke(
+                        "param($Json) foreach ($a in ($Json | ConvertFrom-Json).apps) { " +
+                        "[pscustomobject]@{ Id = [string]$a.id; Name = [string]$a.name; Version = [string]$a.version; Enabled = [bool]$a.enabled } }",
+                        new Dictionary<string, object> { { "Json", catalog } });
+
+                    foreach (var r in result)
+                    {
+                        if (r == null) continue;
+                        rows.Add(new AppRow
+                        {
+                            Id      = Convert.ToString(r.Properties["Id"].Value),
+                            Name    = Convert.ToString(r.Properties["Name"].Value),
+                            Version = Convert.ToString(r.Properties["Version"].Value),
+                            Enabled = Convert.ToBoolean(r.Properties["Enabled"].Value)
+                        });
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+            });
+
+            _apps.Items.Clear();
+            foreach (var row in rows) _apps.Items.Add(row, row.Enabled);
+            _appsLoaded = true;
+
+            if (error != null)
+            {
+                _appsHint.Text = "No se pudo leer el catalogo: " + error;
+                _appsHint.ForeColor = Color.Firebrick;
+            }
+            else
+            {
+                _appsHint.Text = "Catalogo: " + origin + "   ·   " + rows.Count + " aplicacion(es). Marca las que quieras comprobar o instalar.";
+                _appsHint.ForeColor = Color.DimGray;
+            }
+
+            SetBusy(false, error == null ? "Catalogo cargado." : "Error leyendo el catalogo.");
+        }
+
+        private string[] SelectedApps()
+        {
+            var ids = new List<string>();
+            foreach (var item in _apps.CheckedItems)
+            {
+                var row = item as AppRow;
+                if (row != null) ids.Add(row.Id);
+            }
+            return ids.ToArray();
+        }
+
+        // -------------------------------------------------------------------
+        //  Pestana Red (solo diagnostico: no modifica nada)
+        // -------------------------------------------------------------------
+        private TabPage BuildNetworkTab()
+        {
+            var tab = NewTab("Red");
+
+            var panel = new Panel { Dock = DockStyle.Top, Height = 120, Padding = new Padding(16, 12, 16, 8) };
+
+            var intro = NewHint(
+                "Mide latencia, jitter y perdida contra los destinos del catalogo, resuelve DNS, prueba puertos TCP, " +
+                "certificados TLS, MTU y proxy. No cambia nada en el equipo.", 8);
+
+            var lbl = new Label { Text = "Pings por destino:", Left = 16, Top = 58, AutoSize = true };
+            _pingCount = new NumericUpDown
+            {
+                Left = 140, Top = 55, Width = 70,
+                Minimum = 4, Maximum = 500, Value = 50
+            };
+            var lblHint = new Label
+            {
+                Text = "(50 tarda ~1 min; baja a 10 para un vistazo rapido)",
+                Left = 220, Top = 58, AutoSize = true, ForeColor = Color.DimGray
+            };
+
+            panel.Controls.AddRange(new Control[] { intro, lbl, _pingCount, lblHint });
+
+            var buttons = new Panel { Dock = DockStyle.Top, Height = 56, Padding = new Padding(16, 6, 16, 6) };
+            var run = NewButton("EJECUTAR DIAGNOSTICO", 0, 190, Color.FromArgb(0, 90, 150), Color.White);
+            run.Click += (s, e) => Execute("network", reportOnly: true);
+            buttons.Controls.Add(run);
 
             tab.Controls.AddRange(new Control[] { buttons, panel });
             return tab;
@@ -442,45 +613,84 @@ namespace Toolkit.App
         // -------------------------------------------------------------------
         //  Ejecucion de modulos (orquestador embebido)
         // -------------------------------------------------------------------
+        private static TabPage NewTab(string title) =>
+            new TabPage(title) { BackColor = Color.FromArgb(243, 243, 243) };
+
+        private static Label NewHint(string text, int top) =>
+            new Label { Text = text, Top = top, Left = 16, Width = 800, Height = 36, ForeColor = Color.DimGray };
+
         private CheckBox NewCheck(string text, int top, bool chk) =>
             new CheckBox { Text = text, Top = top, Left = 16, Width = 640, Checked = chk, AutoSize = true };
 
-        private Button NewButton(string text, int left, int width, Color back, Color fore) =>
-            new Button
+        private Button NewButton(string text, int left, int width, Color back, Color fore)
+        {
+            var b = new Button
             {
                 Text = text, Left = left + 16, Top = 8, Width = width, Height = 34,
                 BackColor = back, ForeColor = fore, FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9F, FontStyle.Bold)
             };
-
-        private string[] SelectedModules()
-        {
-            var mods = new List<string>();
-            if (_chkLocation.Checked) mods.Add("location");
-            if (_chkApps.Checked)     mods.Add("apps");
-            if (_chkNetwork.Checked)  mods.Add("network");
-            if (_chkUsers.Checked)    mods.Add("users");
-            return mods.ToArray();
+            _actionButtons.Add(b);
+            return b;
         }
 
-        private async void Execute(bool reportOnly)
+        /// <summary>
+        /// Ejecuta UN modulo del orquestador con las opciones de su pestana.
+        /// Cada pestana llama aqui con su propio nombre; el orquestador es el mismo
+        /// que usa el modo desatendido (/silent /modules:...).
+        /// </summary>
+        private async void Execute(string module, bool reportOnly)
         {
-            var modules = SelectedModules();
-            if (modules.Length == 0)
+            string[] apps = null;
+            if (module == "apps")
             {
-                MessageBox.Show("Selecciona al menos un modulo.", "Toolkit",
-                    MessageBoxButtons.OK, MessageBoxIcon.Information);
-                return;
+                apps = SelectedApps();
+                if (apps.Length == 0)
+                {
+                    MessageBox.Show("Marca al menos una aplicacion de la lista.", "Toolkit",
+                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
             }
 
             if (!reportOnly)
             {
-                var confirm = MessageBox.Show(
-                    "Se van a aplicar cambios en este equipo:\n\n  · " + string.Join("\n  · ", modules) +
-                    "\n\nTodos los cambios de registro quedan registrados y son reversibles con 'Revertir'.\n\n¿Continuar?",
+                string what;
+                switch (module)
+                {
+                    case "location":
+                        what = "Se va a activar la ubicacion en este equipo (servicio, registro y politicas)." +
+                               (_chkLockDown.Checked ? "\nEl usuario NO podra desactivarla desde Configuracion." : "") +
+                               "\n\nLos cambios de registro quedan registrados y son reversibles con 'Revertir'.";
+                        break;
+                    case "apps":
+                        what = "Se van a instalar en silencio:\n\n  · " + string.Join("\n  · ", apps) +
+                               "\n\nLa instalacion de aplicaciones NO se deshace con 'Revertir'.";
+                        break;
+                    default:
+                        what = "Se va a ejecutar el modulo '" + module + "'.";
+                        break;
+                }
+                var confirm = MessageBox.Show(what + "\n\n¿Continuar?",
                     "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                 if (confirm != DialogResult.Yes) return;
             }
+
+            // Las opciones se leen aqui, en el hilo de la UI, antes de irse al hilo de trabajo.
+            var options = new RunOptions
+            {
+                Modules     = new[] { module },
+                Apps        = apps,
+                SharePath   = _args.SharePath,
+                Root        = _args.Root,
+                ReportOnly  = reportOnly,
+                Silent      = false,
+                NoLockDown  = !_chkLockDown.Checked,
+                GetPosition = _chkGetPosition.Checked,
+                PingCount   = (int)_pingCount.Value,
+                // El tecnico esta delante: no tiene sentido aplazar a la ventana nocturna.
+                IgnoreMaintenanceWindow = true
+            };
 
             SetBusy(true, reportOnly ? "Auditando..." : "Aplicando cambios...");
             _log.Clear();
@@ -495,21 +705,10 @@ namespace Toolkit.App
                         host.Open();
 
                         string origin;
-                        var catalog = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
+                        options.CatalogJson = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
                         Append(LogLevel.Debug, "Catalogo: " + origin);
 
-                        return host.Run(new RunOptions
-                        {
-                            Modules     = modules,
-                            CatalogJson = catalog,
-                            SharePath   = _args.SharePath,
-                            Root        = _args.Root,
-                            ReportOnly  = reportOnly,
-                            Silent      = false,
-                            NoLockDown  = !_chkLockDown.Checked,
-                            // El tecnico esta delante: no tiene sentido aplazar a la ventana nocturna.
-                            IgnoreMaintenanceWindow = true
-                        });
+                        return host.Run(options);
                     }
                 }
                 catch (Exception ex)
@@ -572,7 +771,8 @@ namespace Toolkit.App
 
         private void SetBusy(bool busy, string status)
         {
-            _btnApply.Enabled = _btnAudit.Enabled = _btnRollback.Enabled = !busy;
+            foreach (var b in _actionButtons) b.Enabled = !busy;
+            _apps.Enabled = !busy;
             _btnUsersRefresh.Enabled = _btnUserNew.Enabled = !busy;
             if (busy)
                 _btnUserPwd.Enabled = _btnUserNoPwd.Enabled = _btnUserToggle.Enabled = _btnUserDelete.Enabled = false;

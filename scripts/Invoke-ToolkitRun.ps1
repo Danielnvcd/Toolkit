@@ -31,6 +31,8 @@ param(
     [string]$SharePath,
     [string]$Root = 'C:\ProgramData\Toolkit',
     [switch]$NoLockDown,
+    [switch]$GetPosition,
+    [int]$PingCount = 0,
     [switch]$IgnoreMaintenanceWindow
 )
 
@@ -90,7 +92,8 @@ function Invoke-ModuleLocation {
     # El registro correcto NO garantiza que funcione: hay que preguntarle a la API.
     if ($config.location.verifyWithApi) {
         Write-Log 'Verificacion contra la API de geolocalizacion...' -Level INFO
-        $api = Test-LocationApi -GetPosition:([bool]$config.location.getPosition)
+        # -GetPosition (GUI) fuerza coordenadas reales aunque el catalogo diga que no.
+        $api = Test-LocationApi -GetPosition:($GetPosition -or [bool]$config.location.getPosition)
         if ($api.ApiAvailable -and $api.LocationStatus -in @('Disabled', 'NotAvailable')) {
             Add-Result -Module 'Location' -Task 'Verificacion API' -Status 'FALLO' `
                        -Message "API en estado $($api.LocationStatus)" -Detail $api
@@ -111,6 +114,7 @@ function Invoke-ModuleApps {
         if (-not $Silent) { Show-AppInventory -Catalog $config }
         foreach ($app in $config.apps) {
             if (-not $app.enabled) { continue }
+            if ($Apps -and $Apps -notcontains $app.id) { continue }
             $d = Test-AppInstalled -App $app
             Add-Result -Module 'Apps' -Task $app.name `
                        -Status $(if ($d.Installed) { 'OK' } else { 'AVISO' }) `
@@ -137,6 +141,7 @@ function Invoke-ModuleNetwork {
 
     $count = 50
     if ($config.network.PSObject.Properties.Name -contains 'pingCount') { $count = [int]$config.network.pingCount }
+    if ($PingCount -gt 0) { $count = $PingCount }   # la GUI puede acortar o alargar la prueba
 
     $net = Invoke-NetworkDiagnostic -NetworkConfig $config.network -PingCount $count
     if (-not $Silent) { Show-NetworkSummary -Report $net }
