@@ -10,7 +10,11 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
     <Version>0.1.0</Version>
-    <Company>Call Center IT</Company>
+    <!-- Identidad de la app: Propiedades > Detalles del exe, dialogo Acerca de y ayuda de consola. -->
+    <Authors>danielnvcd</Authors>
+    <Company>danielnvcd</Company>
+    <Copyright>Copyright (c) 2026 danielnvcd</Copyright>
+    <Description>Toolkit BPO - utilidades de soporte tecnico para call center: ubicacion, aplicaciones, red, usuarios y reparaciones rapidas.</Description>
     <Product>Toolkit BPO</Product>
     <AssemblyTitle>Toolkit BPO</AssemblyTitle>
     <!-- Icono del exe (Explorador, barra de tareas). Se genera desde assets\logo.svg con scripts\tools\New-Logo.ps1 -->
@@ -62,6 +66,7 @@
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Apps.psm1"     LogicalName="Scripts/Toolkit.Apps.psm1" />
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Network.psm1"  LogicalName="Scripts/Toolkit.Network.psm1" />
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Users.psm1"    LogicalName="Scripts/Toolkit.Users.psm1" />
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Support.psm1"  LogicalName="Scripts/Toolkit.Support.psm1" />
     <EmbeddedResource Include="..\..\scripts\Invoke-ToolkitRun.ps1"         LogicalName="Scripts/Invoke-ToolkitRun.ps1" />
     <EmbeddedResource Include="..\..\scripts\config\catalog.json"           LogicalName="Scripts/catalog.json" />
     <!-- El mismo icono, embebido para las ventanas (titulo, Alt+Tab, cabecera). -->

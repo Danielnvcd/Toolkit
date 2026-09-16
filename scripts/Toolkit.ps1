@@ -42,7 +42,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ---------------------------------------------------------------------------
 #  Carga de modulos
 # ---------------------------------------------------------------------------
-foreach ($m in @('Toolkit.Core', 'Toolkit.Location', 'Toolkit.Apps', 'Toolkit.Network', 'Toolkit.Users')) {
+foreach ($m in @('Toolkit.Core', 'Toolkit.Location', 'Toolkit.Apps', 'Toolkit.Network', 'Toolkit.Users', 'Toolkit.Support')) {
     $path = Join-Path $here "modules\$m.psm1"
     if (-not (Test-Path -LiteralPath $path)) {
         Write-Host "ERROR: falta el modulo $path" -ForegroundColor Red
@@ -139,6 +139,7 @@ function Show-Menu {
         Write-Host ''
         Write-Host '   --- USUARIOS LOCALES ---' -ForegroundColor Gray
         Write-Host '    U) Gestionar usuarios (listar, contrasena, eliminar, crear...)'
+        Write-Host '    S) Soporte: info del equipo, audio, red, impresoras, hora, temporales...'
         Write-Host ''
         Write-Host '   --- MANTENIMIENTO ---' -ForegroundColor Gray
         Write-Host '    8) Revertir cambios de registro (rollback)'
@@ -166,6 +167,7 @@ function Show-Menu {
             }
             '9' { Start-Process (Join-Path $Root 'logs') }
             'U' { Show-UsersMenu }
+            'S' { Show-SupportMenu }
             '0' { return }
         }
     }
@@ -248,6 +250,51 @@ function ConvertFrom-SecureStringPlain {
     $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($Secure)
     try { return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr) }
     finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }
+}
+
+function Show-SupportMenu {
+    Initialize-Toolkit -Root $Root
+    while ($true) {
+        Clear-Host
+        Write-Host ''
+        Write-Host '   --- SOPORTE: DIAGNOSTICO (no modifica nada) ---' -ForegroundColor Gray
+        Write-Host '    1) Info del equipo'
+        Write-Host '    2) Audio y microfono'
+        Write-Host '    3) Impresoras'
+        Write-Host '    4) Windows Update'
+        Write-Host '    5) Hora del sistema'
+        Write-Host ''
+        Write-Host '   --- REPARACIONES RAPIDAS ---' -ForegroundColor Gray
+        Write-Host '    A) Reparar red            B) Reset de red (requiere reinicio)'
+        Write-Host '    C) Reiniciar audio        D) Limpiar cola de impresion'
+        Write-Host '    E) Sincronizar hora       F) Limpiar temporales'
+        Write-Host '    G) Permitir microfono y camara'
+        Write-Host '    H) No suspender el equipo I) Buscar actualizaciones'
+        Write-Host '    J) Reparar archivos del sistema (sfc, 5-20 min)'
+        Write-Host ''
+        Write-Host '    R) Guardar reporte para ticket'
+        Write-Host '    0) Volver'
+        Write-Host ''
+        switch ((Read-Host '   Opcion').Trim().ToUpper()) {
+            '1' { Get-SupportSummary | Out-Null; Wait-Key }
+            '2' { Test-AudioSetup    | Out-Null; Wait-Key }
+            '3' { Get-PrinterReport  | Out-Null; Wait-Key }
+            '4' { Get-UpdateStatus   | Out-Null; Wait-Key }
+            '5' { Get-TimeStatus     | Out-Null; Wait-Key }
+            'A' { Repair-Network       | Out-Null; Wait-Key }
+            'B' { Repair-Network -Deep | Out-Null; Wait-Key }
+            'C' { Restart-AudioServices | Out-Null; Wait-Key }
+            'D' { Clear-PrintQueue; Wait-Key }
+            'E' { Sync-SystemTime  | Out-Null; Wait-Key }
+            'F' { Clear-TempFiles  | Out-Null; Wait-Key }
+            'G' { Enable-MediaConsent | Out-Null; Wait-Key }
+            'H' { Set-NoSleepPower | Out-Null; Wait-Key }
+            'I' { Start-UpdateScan | Out-Null; Wait-Key }
+            'J' { Repair-SystemFiles | Out-Null; Wait-Key }
+            'R' { $p = Export-SupportReport -Root $Root; Start-Process explorer.exe "/select,`"$p`""; Wait-Key }
+            '0' { return }
+        }
+    }
 }
 
 function Wait-Key {

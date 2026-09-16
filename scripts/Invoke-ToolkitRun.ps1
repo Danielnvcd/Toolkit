@@ -157,12 +157,16 @@ function Invoke-ModuleLocation {
 function Invoke-ModuleApps {
     Write-Step 'MODULO B - APLICACIONES'
 
+    # -Apps (seleccion explicita del tecnico) manda sobre enabled; sin -Apps,
+    # solo cuentan las activas en el catalogo (despliegue desatendido).
     if ($ReportOnly) {
         if (-not $Silent) { Show-AppInventory -Catalog $config }
         foreach ($app in $config.apps) {
-            if (-not $app.enabled) { continue }
-            if ($Apps -and $Apps -notcontains $app.id) { continue }
+            if ($Apps) { if ($Apps -notcontains $app.id) { continue } }
+            elseif (-not $app.enabled) { continue }
             $d = Test-AppInstalled -App $app
+            Write-Log ("  {0} {1,-40} {2}" -f $(if ($d.Installed) { '+' } else { '-' }), $app.name,
+                       $(if ($d.Installed) { "instalada v$($d.Version)" } else { 'NO instalada' })) -Level $(if ($d.Installed) { 'OK' } else { 'WARN' })
             Add-Result -Module 'Apps' -Task $app.name `
                        -Status $(if ($d.Installed) { 'OK' } else { 'AVISO' }) `
                        -Message $(if ($d.Installed) { "v$($d.Version)" } else { 'No instalada' })
@@ -170,10 +174,9 @@ function Invoke-ModuleApps {
         return
     }
 
-    $enabled = @($config.apps | Where-Object { $_.enabled })
-    if ($enabled.Count -eq 0) {
+    if (-not $Apps -and @($config.apps | Where-Object { $_.enabled }).Count -eq 0) {
         Write-Log 'Ninguna aplicacion activada en el catalogo (todas con enabled=false).' -Level WARN
-        Write-Log 'Rellena las fichas en docs/APP-FICHAS/ y pon enabled=true cuando esten validadas.' -Level WARN
+        Write-Log 'Pon enabled=true en las validadas, o seleccionalas a mano desde la pestana Aplicaciones (/apps:id).' -Level WARN
         return
     }
 

@@ -48,7 +48,7 @@ namespace Toolkit.App
         // Pestana Usuarios
         private ListView _users;
         private Button _btnUsersRefresh, _btnUserNew, _btnUserPwd, _btnUserNoPwd, _btnUserToggle, _btnUserDelete;
-        private ScriptHost _usersHost;
+        private ScriptHost _sharedHost;
         private bool _usersLoaded;
 
         private sealed class UserRow
@@ -61,7 +61,7 @@ namespace Toolkit.App
         {
             _args = args;
             BuildUi();
-            FormClosed += (s, e) => { if (_usersHost != null) _usersHost.Dispose(); };
+            FormClosed += (s, e) => { if (_sharedHost != null) _sharedHost.Dispose(); };
         }
 
         private void BuildUi()
@@ -103,16 +103,30 @@ namespace Toolkit.App
                 Font = new Font("Segoe UI", 13F, FontStyle.Bold),
                 ForeColor = Color.White
             };
+            // "Acerca de" a la derecha del todo; el logo y el nombre tambien lo abren.
+            var about = new LinkLabel
+            {
+                Text = "Acerca de", Dock = DockStyle.Right, AutoSize = false, Width = 84,
+                TextAlign = ContentAlignment.MiddleCenter,
+                LinkColor = Color.FromArgb(200, 210, 225), ActiveLinkColor = Color.White,
+                VisitedLinkColor = Color.FromArgb(200, 210, 225), LinkBehavior = LinkBehavior.HoverUnderline,
+                Font = new Font("Segoe UI", 9F)
+            };
+            about.LinkClicked += (s, e) => ShowAbout();
+            logo.Cursor = title.Cursor = Cursors.Hand;
+            logo.Click  += (s, e) => ShowAbout();
+            title.Click += (s, e) => ShowAbout();
+
             var machine = new Label
             {
                 Text = Environment.MachineName + "   ·   " + Environment.UserName + "   ·   v" + Program.AppVersion(),
                 Dock = DockStyle.Fill, AutoEllipsis = true,
                 TextAlign = ContentAlignment.MiddleRight,
-                Padding = new Padding(8, 0, 16, 0),
+                Padding = new Padding(8, 0, 8, 0),
                 Font = new Font("Segoe UI", 9.5F),
                 ForeColor = Color.FromArgb(200, 210, 225)
             };
-            header.Controls.AddRange(new Control[] { machine, title, logo });
+            header.Controls.AddRange(new Control[] { machine, about, title, logo });
 
             _tabs = new TabControl { Dock = DockStyle.Fill };
             _tabApps  = BuildAppsTab();
@@ -120,6 +134,7 @@ namespace Toolkit.App
             _tabs.TabPages.Add(BuildLocationTab());
             _tabs.TabPages.Add(_tabApps);
             _tabs.TabPages.Add(BuildNetworkTab());
+            _tabs.TabPages.Add(BuildSupportTab());
             _tabs.TabPages.Add(_tabUsers);
             // Las listas se cargan la primera vez que se abre la pestana: abrir un
             // runspace cuesta un segundo y no tiene sentido pagarlo al arrancar.
@@ -189,8 +204,8 @@ namespace Toolkit.App
             // tamano real (escalado DPI incluido); antes, WinForms la recorta.
             Load += (s, e) =>
             {
-                // 300 px logicos, pero nunca mas del 60 % de la altura: el log siempre queda visible.
-                var want = Math.Min(LogicalToDeviceUnits(300), (int)(split.Height * 0.6));
+                // 350 px logicos (cabe la pestana Soporte entera), pero nunca mas del 60 % de la altura.
+                var want = Math.Min(LogicalToDeviceUnits(350), (int)(split.Height * 0.6));
                 want = Math.Max(split.Panel1MinSize, Math.Min(want, split.Height - split.Panel2MinSize - split.SplitterWidth));
                 try { split.SplitterDistance = want; } catch (ArgumentException) { }
             };
@@ -292,7 +307,7 @@ namespace Toolkit.App
             public bool Enabled;
             public override string ToString() =>
                 Name + (string.IsNullOrEmpty(Version) || Version == "0.0.0" ? "" : "  v" + Version) +
-                (Enabled ? "" : "   (desactivada en el catalogo: enabled=false)");
+                (Enabled ? "" : "   (fuera del despliegue automatico: enabled=false; se instala si la marcas)");
         }
 
         /// <summary>
@@ -310,7 +325,7 @@ namespace Toolkit.App
                 try
                 {
                     var catalog = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
-                    var result = UsersHost().Invoke(
+                    var result = SharedHost().Invoke(
                         "param($Json) foreach ($a in ($Json | ConvertFrom-Json).apps) { " +
                         "[pscustomobject]@{ Id = [string]$a.id; Name = [string]$a.name; Version = [string]$a.version; Enabled = [bool]$a.enabled } }",
                         new Dictionary<string, object> { { "Json", catalog } });
@@ -397,6 +412,156 @@ namespace Toolkit.App
 
             tab.Controls.Add(stack);
             return tab;
+        }
+
+        // -------------------------------------------------------------------
+        //  Pestana Soporte: utilidades de un clic para el tecnico de L1.
+        //  Cada boton llama a una funcion de Toolkit.Support.psm1 en el runspace
+        //  compartido; no pasa por el orquestador porque son acciones sueltas.
+        // -------------------------------------------------------------------
+        private TabPage BuildSupportTab()
+        {
+            var tab = NewTab("Soporte");
+            var stack = NewStack();
+
+            var grey  = Color.FromArgb(230, 230, 230);
+            var blue  = Color.FromArgb(0, 90, 150);
+            var green = Color.FromArgb(0, 120, 60);
+            var amber = Color.FromArgb(170, 95, 0);
+
+            // --- Diagnostico ---
+            stack.Controls.Add(NewSection("Diagnostico  (no cambia nada)"));
+            var bInfo    = NewButton("Info del equipo",     grey, Color.Black);
+            var bAudio   = NewButton("Audio y microfono",   grey, Color.Black);
+            var bPrint   = NewButton("Impresoras",          grey, Color.Black);
+            var bUpdate  = NewButton("Windows Update",      grey, Color.Black);
+            var bTime    = NewButton("Hora del sistema",    grey, Color.Black);
+            bInfo.Click   += async (s, e) => await RunSupport("Info del equipo",   "Get-SupportSummary | Out-Null");
+            bAudio.Click  += async (s, e) => await RunSupport("Audio y microfono", "Test-AudioSetup | Out-Null");
+            bPrint.Click  += async (s, e) => await RunSupport("Impresoras",        "Get-PrinterReport | Out-Null");
+            bUpdate.Click += async (s, e) => await RunSupport("Windows Update",    "Get-UpdateStatus | Out-Null");
+            bTime.Click   += async (s, e) => await RunSupport("Hora del sistema",  "Get-TimeStatus | Out-Null");
+            stack.Controls.Add(NewButtonRow(bInfo, bAudio, bPrint, bUpdate, bTime));
+
+            // --- Reparaciones rapidas ---
+            stack.Controls.Add(NewSection("Reparaciones rapidas"));
+            var bNet     = NewButton("Reparar red",                    blue, Color.White);
+            var bNetDeep = NewButton("Reset de red (reinicia)",        amber, Color.White);
+            var bAudioR  = NewButton("Reiniciar audio",                blue, Color.White);
+            var bQueue   = NewButton("Limpiar cola de impresion",      blue, Color.White);
+            var bSync    = NewButton("Sincronizar hora",               blue, Color.White);
+            var bTemp    = NewButton("Limpiar temporales",             blue, Color.White);
+            var bMedia   = NewButton("Permitir microfono y camara",    green, Color.White);
+            var bPower   = NewButton("No suspender el equipo",         blue, Color.White);
+            var bScan    = NewButton("Buscar actualizaciones",         blue, Color.White);
+            var bSfc     = NewButton("Reparar archivos del sistema",   amber, Color.White);
+
+            bNet.Click     += async (s, e) => await RunSupport("Reparar red", "Repair-Network | Out-Null",
+                "Se vaciara la cache DNS y se renovara la IP por DHCP. La red se corta uno o dos segundos.");
+            bNetDeep.Click += async (s, e) => await RunSupport("Reset de red", "Repair-Network -Deep | Out-Null",
+                "Reset profundo: Winsock y pila TCP/IP. Deshace configuraciones de proxy/VPN raras.\n\nHABRA QUE REINICIAR EL EQUIPO al terminar.");
+            bAudioR.Click  += async (s, e) => await RunSupport("Reiniciar audio", "Restart-AudioServices | Out-Null",
+                "Se reiniciaran los servicios de audio. El sonido se corta unos segundos; el softphone puede necesitar reabrirse.");
+            bQueue.Click   += async (s, e) => await RunSupport("Limpiar cola de impresion", "Clear-PrintQueue",
+                "Se eliminaran TODOS los trabajos pendientes de todas las impresoras de este equipo.");
+            bSync.Click    += async (s, e) => await RunSupport("Sincronizar hora", "Sync-SystemTime | Out-Null");
+            bTemp.Click    += async (s, e) => await RunSupport("Limpiar temporales", "Clear-TempFiles | Out-Null",
+                "Se borraran los archivos temporales de mas de 1 dia de todos los perfiles y de Windows, y se vaciara la papelera.");
+            bMedia.Click   += async (s, e) => await RunSupport("Permitir microfono y camara", "Enable-MediaConsent | Out-Null",
+                "Se permitira el microfono y la camara para el equipo, las apps de escritorio y todos los usuarios.\n\nReversible con 'Revertir' (pestana Ubicacion).");
+            bPower.Click   += async (s, e) => await RunSupport("No suspender", "Set-NoSleepPower | Out-Null",
+                "Con corriente, el equipo no se suspendera ni hibernara; la pantalla se apaga a los 15 min.\nSe desactiva la hibernacion (libera varios GB).");
+            bScan.Click    += async (s, e) => await RunSupport("Buscar actualizaciones", "Start-UpdateScan | Out-Null",
+                "Se pedira a Windows Update que busque, descargue e instale actualizaciones. Puede pedir reinicio mas tarde.");
+            bSfc.Click     += async (s, e) => await RunSupport("Reparar archivos del sistema", "Repair-SystemFiles | Out-Null",
+                "sfc /scannow tarda entre 5 y 20 minutos. No cierres el toolkit mientras tanto.");
+            stack.Controls.Add(NewButtonRow(bNet, bNetDeep, bAudioR, bQueue, bSync, bTemp, bMedia, bPower, bScan, bSfc));
+
+            // --- Reporte ---
+            stack.Controls.Add(NewSection("Reporte"));
+            var bReport = NewButton("Guardar reporte para ticket", green, Color.White);
+            var bCopy   = NewButton("Copiar log",                  grey,  Color.Black);
+            var bLogs   = NewButton("Abrir carpeta de logs",       grey,  Color.Black);
+            bReport.Click += async (s, e) =>
+            {
+                var path = await RunSupport("Reporte para ticket",
+                    "param($Root) Export-SupportReport -Root $Root",
+                    parameters: new Dictionary<string, object> { { "Root", _args.Root } });
+                if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
+                {
+                    try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + path + "\""); } catch { }
+                }
+            };
+            bCopy.Click += (s, e) =>
+            {
+                try { Clipboard.SetText(_log.Text); _status.Text = "Log copiado al portapapeles."; }
+                catch (Exception ex) { _status.Text = "No se pudo copiar: " + ex.Message; }
+            };
+            bLogs.Click += (s, e) =>
+            {
+                var dir = System.IO.Path.Combine(_args.Root, "logs");
+                try { System.Diagnostics.Process.Start("explorer.exe", System.IO.Directory.Exists(dir) ? dir : _args.Root); } catch { }
+            };
+            stack.Controls.Add(NewButtonRow(bReport, bCopy, bLogs));
+
+            tab.Controls.Add(stack);
+            return tab;
+        }
+
+        private void ShowAbout()
+        {
+            using (var dlg = new AboutDialog()) dlg.ShowDialog(this);
+        }
+
+        private static Label NewSection(string text) =>
+            new Label
+            {
+                Text = text, AutoSize = true,
+                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
+                ForeColor = Color.FromArgb(32, 45, 66),
+                Margin = new Padding(3, 8, 3, 2)
+            };
+
+        /// <summary>
+        /// Ejecuta una accion de soporte en el runspace compartido. Con <paramref name="confirm"/>
+        /// pide confirmacion antes (para las que cambian algo). Devuelve el ultimo
+        /// valor de salida como texto (lo usa el reporte para abrir el archivo).
+        /// </summary>
+        private async Task<string> RunSupport(string title, string script, string confirm = null,
+                                              IDictionary<string, object> parameters = null)
+        {
+            if (confirm != null)
+            {
+                var r = MessageBox.Show(this, confirm + "\n\n¿Continuar?", title,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                if (r != DialogResult.Yes) return null;
+            }
+
+            SetBusy(true, title + "...");
+            _log.Clear();
+            string last = null, error = null;
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    var res = SharedHost().Invoke(script, parameters);
+                    if (res != null && res.Count > 0 && res[res.Count - 1] != null)
+                        last = res[res.Count - 1].BaseObject?.ToString();
+                }
+                catch (Exception ex) { error = ex.Message; }
+            });
+
+            if (error != null)
+            {
+                Append(LogLevel.Error, "ERROR: " + error);
+                SetBusy(false, title + ": error. Revisa el log.");
+            }
+            else
+            {
+                SetBusy(false, title + ": terminado.");
+            }
+            return last;
         }
 
         // -------------------------------------------------------------------
@@ -498,21 +663,22 @@ namespace Toolkit.App
         }
 
         /// <summary>
-        /// Runspace propio para la pestana Usuarios. Se abre una vez y se reutiliza:
-        /// asi el log de las acciones sobre cuentas va todo al mismo archivo.
+        /// Runspace compartido por las pestanas Usuarios, Aplicaciones y Soporte
+        /// (acciones sueltas que no pasan por el orquestador). Se abre una vez y
+        /// se reutiliza: asi todo va al mismo archivo de log.
         /// </summary>
-        private ScriptHost UsersHost()
+        private ScriptHost SharedHost()
         {
-            if (_usersHost == null)
+            if (_sharedHost == null)
             {
                 var h = new ScriptHost();
                 h.Output += (s, e) => Append(e.Level, e.Text);
                 h.Open();
                 h.Invoke("param($Root) Initialize-Toolkit -Root $Root",
                     new Dictionary<string, object> { { "Root", _args.Root } });
-                _usersHost = h;
+                _sharedHost = h;
             }
-            return _usersHost;
+            return _sharedHost;
         }
 
         private async Task RefreshUsers()
@@ -525,7 +691,7 @@ namespace Toolkit.App
             {
                 try
                 {
-                    foreach (var o in UsersHost().Invoke("Get-LocalUserInventory"))
+                    foreach (var o in SharedHost().Invoke("Get-LocalUserInventory"))
                         if (o != null) rows.Add(ToRow(o));
                 }
                 catch (Exception ex) { error = ex.Message; }
@@ -681,7 +847,7 @@ namespace Toolkit.App
             {
                 try
                 {
-                    var res = UsersHost().Invoke(script, parameters);
+                    var res = SharedHost().Invoke(script, parameters);
                     var r = res.FirstOrDefault(x => x != null && x.Properties["Success"] != null);
                     if (r != null)
                     {

@@ -416,7 +416,14 @@ function Install-CatalogApp {
 }
 
 function Install-AppSet {
-    <# Instala el conjunto de aplicaciones del catalogo. -Only limita a ids concretos. #>
+    <#
+        Instala el conjunto de aplicaciones del catalogo.
+
+        -Only limita a ids concretos y ademas es una SELECCION EXPLICITA: se
+        instalan aunque tengan enabled=false. El flag enabled gobierna el
+        despliegue desatendido (agente, /silent /all), no lo que el tecnico
+        marca a mano en la pestana Aplicaciones.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]$Catalog,
@@ -428,17 +435,24 @@ function Install-AppSet {
     if ($Catalog.PSObject.Properties.Name -contains 'packageRepo') { $repo = $Catalog.packageRepo }
 
     $apps = @($Catalog.apps)
-    if ($Only) { $apps = @($apps | Where-Object { $Only -contains $_.id }) }
-
-    $skipped = @($apps | Where-Object { -not $_.enabled })
-    foreach ($s in $skipped) {
-        Write-Log ("  - {0}: desactivado en el catalogo (enabled=false)" -f $s.name) -Level DEBUG
-        Add-Result -Module 'Apps' -Task $s.name -Status 'OMITIDO' -Message 'enabled=false en catalog.json'
+    if ($Only) {
+        $apps = @($apps | Where-Object { $Only -contains $_.id })
+        $unknown = @($Only | Where-Object { $_ -notin $apps.id })
+        foreach ($u in $unknown) { Write-Log "  ! '$u' no existe en el catalogo" -Level WARN }
+        foreach ($a in @($apps | Where-Object { -not $_.enabled })) {
+            Write-Log ("  i {0}: enabled=false en el catalogo, pero se instala porque se selecciono explicitamente" -f $a.name) -Level INFO
+        }
+    } else {
+        $skipped = @($apps | Where-Object { -not $_.enabled })
+        foreach ($s in $skipped) {
+            Write-Log ("  - {0}: desactivado en el catalogo (enabled=false)" -f $s.name) -Level DEBUG
+            Add-Result -Module 'Apps' -Task $s.name -Status 'OMITIDO' -Message 'enabled=false en catalog.json'
+        }
+        $apps = @($apps | Where-Object { $_.enabled })
     }
 
-    $apps = @($apps | Where-Object { $_.enabled })
     if ($apps.Count -eq 0) {
-        Write-Log 'No hay aplicaciones activas en el catalogo. Revisa enabled=true en catalog.json.' -Level WARN
+        Write-Log 'No hay aplicaciones que instalar (ninguna seleccionada o activa en el catalogo).' -Level WARN
         return
     }
 

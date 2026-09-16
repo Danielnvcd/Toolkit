@@ -156,5 +156,31 @@ namespace Toolkit.App
         {
             return System.Reflection.Assembly.GetExecutingAssembly().GetName().Version.ToString(3);
         }
+
+        // Identidad de la app. La fuente unica es el .csproj (Authors/Company/Copyright/
+        // Description): asi lo que ve el Explorador en Propiedades > Detalles y lo que
+        // ve el usuario en Acerca de es siempre lo mismo.
+        public const string AppName = "Toolkit BPO";
+
+        public static string AppAuthor    => AssemblyAttr<System.Reflection.AssemblyCompanyAttribute>(a => a.Company)     ?? "danielnvcd";
+        public static string AppCopyright => AssemblyAttr<System.Reflection.AssemblyCopyrightAttribute>(a => a.Copyright) ?? "";
+        public static string AppDescription => AssemblyAttr<System.Reflection.AssemblyDescriptionAttribute>(a => a.Description) ?? "";
+
+        /// <summary>Fecha del ejecutable (el build es determinista, asi que se usa la del archivo).</summary>
+        public static string AppBuildDate()
+        {
+            try { return System.IO.File.GetLastWriteTime(Application.ExecutablePath).ToString("yyyy-MM-dd"); }
+            catch { return "?"; }
+        }
+
+        private static string AssemblyAttr<T>(Func<T, string> pick) where T : Attribute
+        {
+            try
+            {
+                var a = (T)Attribute.GetCustomAttribute(System.Reflection.Assembly.GetExecutingAssembly(), typeof(T));
+                return a == null ? null : pick(a);
+            }
+            catch { return null; }
+        }
     }
 }

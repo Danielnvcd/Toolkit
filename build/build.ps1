@@ -101,6 +101,7 @@ $expected = @(
     'Scripts/Toolkit.Apps.psm1'
     'Scripts/Toolkit.Network.psm1'
     'Scripts/Toolkit.Users.psm1'
+    'Scripts/Toolkit.Support.psm1'
     'Scripts/Invoke-ToolkitRun.ps1'
     'Scripts/catalog.json'
 )

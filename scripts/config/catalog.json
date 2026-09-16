@@ -46,6 +46,50 @@
 
   "apps": [
     {
+      "id": "genesys-cloud",
+      "name": "Genesys Cloud (softphone de escritorio)",
+      "version": "2.54.925",
+      "enabled": true,
+      "installerType": "exe",
+      "source": {
+        "share": "genesys-cloud\\2.54.925\\genesys-cloud-windows-2.54.925-x64.exe",
+        "url": "https://app.mypurecloud.com/directory-windows/build-assets/2.54.925-259/genesys-cloud-windows-2.54.925-x64.exe"
+      },
+      "sha256": "20e647a3516354282474d4adfefffaad669660583542f4d53c59fdadfd3ccfcd",
+      "silentArgs": "/install /quiet /norestart",
+      "detection": {
+        "method": "uninstall",
+        "displayName": "Genesys Cloud",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "Instalador oficial EXE (WiX Burn, firmado por Genesys Cloud Services). Se usa el EXE y no el MSI porque el EXE instala solo los prerrequisitos (.NET 4.8 y VC++ 14.38); el MSI exige tenerlos antes. La URL lleva el numero de build: cuando salga version nueva, copiar el enlace de https://apps.mypurecloud.com/directory-windows/ y recalcular sha256 con Get-FileHash. minVersion vacio a proposito: la app se autoactualiza, basta con que este instalada."
+    },
+
+    {
+      "id": "krisp",
+      "name": "Krisp (cancelacion de ruido)",
+      "version": "3.16.8",
+      "enabled": true,
+      "installerType": "exe",
+      "source": {
+        "share": "krisp\\3.16.8\\Krisp_3.16.8.exe",
+        "url": "https://cdn.krisp.ai/mp/mn/3.16/win/Krisp_3.16.8.exe"
+      },
+      "sha256": "46c89d2e9f221755f66e145bfe8aeea220fa0a6943587625974459910e188aa0",
+      "silentArgs": "/quiet /norestart INSTALLPERUSER=0",
+      "detection": {
+        "method": "uninstall",
+        "displayName": "Krisp",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "Instalador oficial EXE (WiX Burn, firmado por Krisp Technologies). INSTALLPERUSER=0 = instalacion para todo el equipo (sin el, se instala solo para el usuario que ejecuta, que aqui seria el admin y no el agente). La URL estable https://download.krisp.ai/win redirige siempre a la version actual: para actualizar la ficha, abrirla, copiar la URL final y recalcular sha256. minVersion vacio: la app se autoactualiza. Si teneis Krisp con SSO de empresa, el instalador admite parametros adicionales (ver help.krisp.ai, 'Deploy Krisp for your team')."
+    },
+
+    {
       "id": "netextender",
       "name": "SonicWall NetExtender",
       "version": "10.3.2",

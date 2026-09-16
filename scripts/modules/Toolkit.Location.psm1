@@ -755,8 +755,12 @@ function Test-CheckInReadiness {
     if ($null -eq $wifi) {
         Write-Log '  ! No se pudo enumerar adaptadores (Get-NetAdapter no disponible)' -Level WARN
     } elseif ($wifi.Count -eq 0) {
-        $warns += 'Sin adaptador Wi-Fi: Windows solo puede ubicar por IP (error de kilometros). Con geovalla en Zoho el check-in fallara.'
-        Write-Log '  ! Sin adaptador Wi-Fi: la posicion sera por IP publica (precision de km)' -Level WARN
+        # Caso tipico de call center: sobremesa por Ethernet. Windows solo tiene la IP publica.
+        $warns += 'Equipo solo Ethernet (sin Wi-Fi): Windows ubica por IP publica, con kilometros de error. Con geovalla en Zoho el check-in puede caer fuera del radio.'
+        Write-Log '  ! Equipo solo Ethernet: sin Wi-Fi, Windows ubica por la IP publica (precision de km).' -Level WARN
+        Write-Log '    Opciones: (a) en Zoho People usar restriccion por IP de la oficina en vez de geovalla;' -Level INFO
+        Write-Log '              (b) un adaptador Wi-Fi USB (no hace falta conectarlo: Windows triangula con las redes cercanas);' -Level INFO
+        Write-Log '              (c) fijar la "ubicacion predeterminada" en Configuracion > Privacidad > Ubicacion (se usa como respaldo).' -Level INFO
     } else {
         foreach ($w in $wifi) {
             if ($w.Status -eq 'Disabled') {

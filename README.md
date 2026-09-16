@@ -1,11 +1,12 @@
 # Toolkit BPO
 
-Utilidad portable para Windows 10/11 que resuelve, desde una sola ventana, cuatro tareas que normalmente hay que hacer a mano y en varios sitios:
+Utilidad portable para Windows 10/11 que resuelve, desde una sola ventana, las tareas de soporte que normalmente hay que hacer a mano y en varios sitios:
 
 - **Activar la ubicación** de Windows para todos los usuarios del equipo, **sin reiniciar**.
 - **Gestionar las cuentas locales**: ver quién hay, cambiar o quitar contraseñas, habilitar, deshabilitar, crear y eliminar usuarios.
 - **Instalar aplicaciones** en silencio a partir de un catálogo.
 - **Diagnosticar la red**: latencia, jitter, pérdida de paquetes, DNS, MTU, puertos y TLS.
+- **Soporte de primer nivel**: info del equipo, audio y micrófono, impresoras, hora, temporales, reparar red, reporte para ticket.
 
 Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a una carpeta compartida y se ejecuta. Todo lo que necesita ya viene con Windows.
 
@@ -15,7 +16,7 @@ Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a un
 
 1. Copia `Toolkit.exe` al equipo (o ejecútalo directamente desde el USB).
 2. Haz doble clic. Pedirá permisos de administrador: son necesarios porque toca servicios, registro y cuentas.
-3. Cada cosa tiene su pestaña: **Ubicación**, **Aplicaciones**, **Red** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; el log de abajo es común.
+3. Cada cosa tiene su pestaña: **Ubicación**, **Aplicaciones**, **Red**, **Soporte** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; el log de abajo es común.
 4. En Ubicación y Aplicaciones, pulsa primero **Auditar** / **Comprobar instaladas**. No cambia nada; solo muestra el estado. Empieza siempre por ahí.
 5. Cuando lo tengas claro, pulsa **Activar ubicación** (activa el servicio, las políticas, los usuarios y los navegadores, y al terminar comprueba el check-in) o **Instalar seleccionadas**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
 
@@ -41,7 +42,10 @@ Activar la ubicación en Windows no es un solo interruptor: hay cuatro capas y, 
 El motivo de todo esto es que los agentes hagan **check-in en Zoho People desde el navegador**, y ahí hacen falta dos cosas más que Windows no resuelve:
 
 - **Permiso del navegador.** Aunque Windows tenga la ubicación activa, el navegador pregunta "zoho.com quiere conocer tu ubicación" y, si el agente pulsa *Bloquear* una vez, el check-in deja de funcionar en ese perfil sin ningún aviso. *Activar ubicación* escribe la política de Chrome y Edge (`DefaultGeolocationSetting = 1`, permitir sin preguntar) y la lista de sitios permitidos de Firefox. Chrome y Edge la aplican al momento; Firefox al reiniciarse. Se puede desmarcar en la pestaña (o `/nobrowsers`).
-- **Precisión.** Sin GPS, Windows ubica por las redes Wi-Fi cercanas (decenas de metros) o, si el equipo no tiene adaptador Wi-Fi, por la IP pública (kilómetros). Si Zoho tiene una geovalla, un equipo de sobremesa sin Wi-Fi hará check-in fuera del radio aunque todo esté "activado". No hace falta *conectar* el Wi-Fi: basta con que el adaptador exista y esté habilitado para que escanee.
+- **Precisión.** Sin GPS, Windows ubica por las redes Wi-Fi cercanas (decenas de metros) o, si el equipo no tiene adaptador Wi-Fi, por la IP pública (kilómetros). **Los sobremesa por Ethernet, que son la mayoría en un call center, caen en el segundo caso**: con geovalla en Zoho pueden hacer check-in "fuera del radio" aunque todo esté activado. Tres salidas, de mejor a peor:
+  1. En Zoho People, configurar la asistencia con **restricción por IP** (la IP pública de la oficina) en vez de, o además de, geovalla. Es lo pensado para puestos fijos y no necesita nada en el equipo.
+  2. Un **adaptador Wi-Fi USB** en cada equipo. No hace falta conectarlo a ninguna red: basta con que esté habilitado para que Windows triangule con las redes de alrededor.
+  3. Fijar la **ubicación predeterminada** del equipo (Configuración → Privacidad → Ubicación → Ubicación predeterminada, abre Mapas). Windows la usa como respaldo cuando no tiene nada mejor. Es manual, equipo por equipo.
 
 El botón **Comprobar check-in Zoho** (o `Toolkit.exe /checkin`) recorre en orden todo lo que tiene que estar bien y dice si el equipo está listo o qué falta: capas de Windows, política de cada navegador instalado, adaptador Wi-Fi, posición real con su precisión, y conectividad (DNS + 443) hacia Zoho y hacia el servicio de posicionamiento de Microsoft. No modifica nada.
 
@@ -68,6 +72,33 @@ Instala en silencio las aplicaciones definidas en `catalog.json` (MSI o EXE): co
 ### Red
 
 Mide contra los destinos que indiques en `catalog.json`: ping (latencia, jitter y pérdida), resolución DNS, puertos TCP, certificados TLS, MTU y proxy. Sirve para saber si un "va lento" o "se corta" es culpa de la red o del equipo.
+
+### Soporte
+
+Las herramientas de un clic que un técnico de primer nivel usa a diario. Todas funcionan en cualquier Windows 10/11 sin instalar nada.
+
+| Diagnóstico (no cambia nada) | Qué muestra |
+|---|---|
+| Info del equipo | Modelo, serie, Windows y build, CPU, RAM libre, discos, tiempo encendido, BIOS, TPM, antivirus. Avisa si hay poca RAM, poco disco o lleva semanas sin reiniciar |
+| Audio y micrófono | Servicios de audio, tarjetas, dispositivos activos, si hay micrófono, y los permisos de micrófono/cámara de Windows |
+| Impresoras | Cola de impresión, impresoras, predeterminada, estado y trabajos atascados |
+| Windows Update | Último parche, reinicio pendiente, estado del servicio |
+| Hora del sistema | Hora, zona horaria, fuente NTP y desfase |
+
+| Reparación | Qué hace |
+|---|---|
+| Reparar red | Vacía DNS, renueva DHCP y comprueba puerta de enlace e Internet. Sin reiniciar |
+| Reset de red | Además, Winsock y pila TCP/IP. Requiere reiniciar |
+| Reiniciar audio | Reinicia los servicios de audio (el clásico "se me fue el sonido") |
+| Limpiar cola de impresión | Elimina los trabajos atascados y arranca el Spooler |
+| Sincronizar hora | Fuerza la sincronización NTP |
+| Limpiar temporales | Temporales de todos los perfiles y de Windows (solo de más de 1 día) y papelera; dice cuántos MB liberó |
+| Permitir micrófono y cámara | Igual que la ubicación: equipo, apps de escritorio y todos los usuarios. Reversible con *Revertir* |
+| No suspender el equipo | Con corriente no se suspende ni hiberna; la pantalla se apaga a los 15 min |
+| Buscar actualizaciones | Pide a Windows Update buscar, descargar e instalar |
+| Reparar archivos del sistema | `sfc /scannow` (5-20 min) |
+
+**Guardar reporte para ticket** genera un `.txt` con todo lo anterior más ubicación, usuarios e `ipconfig /all` en `C:\ProgramData\Toolkit\reports\` y lo abre en el Explorador, listo para adjuntar a un escalado. **Copiar log** copia lo que hay en pantalla al portapapeles.
 
 ---
 
@@ -127,7 +158,9 @@ Cada aplicación del catálogo necesita saber cómo instalarse en silencio y có
 scripts\tools\New-AppFicha.ps1 -Path 'D:\instaladores\MiApp.msi' -Id miapp
 ```
 
-Pega el resultado en `apps` del `catalog.json`, prueba la instalación en un equipo limpio y pon `"enabled": true`. El catálogo incluye un ejemplo funcional (7-Zip) para probar el mecanismo.
+Pega el resultado en `apps` del `catalog.json` y prueba la instalación en un equipo limpio. El catálogo trae **Genesys Cloud** y **Krisp** (instaladores oficiales, con su SHA-256, `enabled: true`) y un ejemplo con 7-Zip.
+
+`enabled` solo gobierna el **despliegue desatendido** (`/silent /all` y el agente). En la pestaña Aplicaciones, lo que el técnico marca se instala aunque tenga `enabled: false`: la selección a mano manda.
 
 ---
 
@@ -183,4 +216,10 @@ El diseño completo está en [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Estado
 
-El código está escrito pero **todavía no se ha compilado ni ejecutado en Windows** (se desarrolló en Linux). Antes de usarlo en equipos reales, sigue [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).
+Compila y arranca en Windows 10/11 con el SDK de .NET 8 (`build\build.ps1`). Lo que ya se ha ejecutado en un equipo real: las auditorías y diagnósticos de solo lectura (ubicación, check-in, navegadores, info del equipo, audio, impresoras, Windows Update, hora). Lo que todavía necesita una pasada en máquina de pruebas antes de ir a producción: aplicar la ubicación, instalar Genesys Cloud y Krisp, las reparaciones de la pestaña Soporte y el agente. Procedimiento en [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).
+
+---
+
+## Autor
+
+**Toolkit BPO** — creado por **danielnvcd**. La identidad de la app (creador, copyright, descripción) vive en `src\Toolkit.App\Toolkit.App.csproj` y de ahí sale lo que muestran el Explorador (Propiedades → Detalles del exe), el diálogo *Acerca de* de la app (clic en el logo o en "Acerca de") y `Toolkit.exe /?`.
