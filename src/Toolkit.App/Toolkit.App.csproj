@@ -1,0 +1,48 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net48</TargetFramework>
+    <AssemblyName>Toolkit</AssemblyName>
+    <RootNamespace>Toolkit.App</RootNamespace>
+    <PlatformTarget>x64</PlatformTarget>
+    <LangVersion>latest</LangVersion>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <Version>0.1.0</Version>
+    <Company>Call Center IT</Company>
+    <Product>Toolkit Call Center</Product>
+    <!-- Sin ventana de consola propia: en modo CLI se engancha a la del padre (Program.cs) -->
+    <DebugType>embedded</DebugType>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Ensamblados de referencia de Windows PowerShell 5.1.
+      No se distribuye ninguna DLL: en tiempo de ejecucion resuelve contra la
+      System.Management.Automation del GAC, presente en todo Windows 10/11.
+    -->
+    <PackageReference Include="Microsoft.PowerShell.5.1.ReferenceAssemblies" Version="1.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Drawing" />
+    <Reference Include="System.Management" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      AQUI ES DONDE LOS SCRIPTS ENTRAN EN EL EXE.
+      Se embeben como recursos; no se escriben nunca en disco.
+      Cambiar un .psm1 y recompilar es todo lo que hace falta.
+    -->
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Core.psm1"     LogicalName="Scripts/Toolkit.Core.psm1" />
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Location.psm1" LogicalName="Scripts/Toolkit.Location.psm1" />
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Apps.psm1"     LogicalName="Scripts/Toolkit.Apps.psm1" />
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Network.psm1"  LogicalName="Scripts/Toolkit.Network.psm1" />
+    <EmbeddedResource Include="..\..\scripts\Invoke-ToolkitRun.ps1"         LogicalName="Scripts/Invoke-ToolkitRun.ps1" />
+    <EmbeddedResource Include="..\..\scripts\config\catalog.json"           LogicalName="Scripts/catalog.json" />
+  </ItemGroup>
+
+</Project>

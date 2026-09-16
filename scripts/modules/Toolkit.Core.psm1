@@ -12,6 +12,7 @@ $script:SharePath    = $null
 $script:Silent       = $false
 $script:ReportOnly   = $false
 $script:Results      = New-Object System.Collections.ArrayList
+$script:RebootPending = $false
 
 #region ---------- Inicializacion ----------
 
@@ -29,6 +30,7 @@ function Initialize-Toolkit {
     $script:ReportOnly = $ReportOnly.IsPresent
     $script:SharePath  = $SharePath
     $script:Results    = New-Object System.Collections.ArrayList
+    $script:RebootPending = $false
 
     foreach ($dir in @($Root, (Join-Path $Root 'logs'), (Join-Path $Root 'reports'), (Join-Path $Root 'temp'))) {
         if (-not (Test-Path -LiteralPath $dir)) {
@@ -162,7 +164,13 @@ function Save-RegBackup {
             Type      = $Type
             Timestamp = (Get-Date).ToString('o')
         }
-        $entries | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:RollbackPath -Encoding UTF8
+        # Escritura atomica: si el proceso muere a mitad de un Set-Content, el
+        # rollback.json queda truncado y se pierde la capacidad de revertir
+        # en ese equipo. Se escribe a temporal y se mueve.
+        $tmp = $script:RollbackPath + '.tmp'
+        $entries | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $tmp -Encoding UTF8
+        [System.IO.File]::Copy($tmp, $script:RollbackPath, $true)
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     } catch {
         Write-Log "No se pudo guardar el respaldo de $Path\$Name : $($_.Exception.Message)" -Level WARN
     }
@@ -398,16 +406,72 @@ function Show-Summary {
     Write-Host ('=' * 78) -ForegroundColor Cyan
 }
 
+function Set-RebootPending {
+    <# Lo marca cualquier instalador que devuelva 3010/1641. #>
+    $script:RebootPending = $true
+}
+
+function Test-RebootPendingFlag { return $script:RebootPending }
+
 function Get-ExitCode {
     <# Codigos de salida segun el plan (seccion 9). #>
     $sum = Get-ResultSummary
-    if ($sum.FALLO -eq 0) { return 0 }
+    if ($sum.FALLO -eq 0) {
+        # 3010 = correcto PERO requiere reinicio. Sin esto, el equipo queda a
+        # medias y ni la tarea programada ni el RMM se enteran.
+        if ($script:RebootPending) { return 3010 }
+        return 0
+    }
 
     $failedModules = @($script:Results | Where-Object { $_.Status -eq 'FALLO' } | Select-Object -ExpandProperty Module -Unique)
     if ($failedModules -contains 'Location') { return 1001 }
     if ($failedModules -contains 'Apps')     { return 1002 }
     if ($failedModules -contains 'Network')  { return 1003 }
     return 1
+}
+
+#endregion
+
+#region ---------- Instancia unica ----------
+
+$script:InstanceMutex = $null
+
+function Enter-ToolkitInstance {
+    <#
+        Impide que dos ejecuciones coincidan en el mismo equipo.
+        Sin esto, la tarea programada del agente y el tecnico con la interfaz
+        pueden escribir rollback.json a la vez y dejarlo inservible, o pelearse
+        por el mutex de Windows Installer.
+        Devuelve $true si se obtuvo la exclusividad.
+    #>
+    [CmdletBinding()]
+    param([int]$WaitSeconds = 0)
+
+    try {
+        $created = $false
+        $script:InstanceMutex = New-Object System.Threading.Mutex($true, 'Global\ToolkitCallCenter', [ref]$created)
+        if ($created) { return $true }
+
+        if ($WaitSeconds -gt 0) {
+            if ($script:InstanceMutex.WaitOne([TimeSpan]::FromSeconds($WaitSeconds))) { return $true }
+        }
+        Write-Log 'Ya hay otra instancia del toolkit en ejecucion en este equipo.' -Level WARN
+        return $false
+    } catch [System.Threading.AbandonedMutexException] {
+        # La instancia anterior murio sin liberar: se hereda el mutex.
+        return $true
+    } catch {
+        Write-Log "No se pudo crear el mutex de instancia: $($_.Exception.Message)" -Level WARN
+        return $true   # nunca bloquear la ejecucion por no poder crear el mutex
+    }
+}
+
+function Exit-ToolkitInstance {
+    if ($script:InstanceMutex) {
+        try { $script:InstanceMutex.ReleaseMutex() } catch { }
+        try { $script:InstanceMutex.Dispose() }      catch { }
+        $script:InstanceMutex = $null
+    }
 }
 
 #endregion
@@ -454,6 +518,8 @@ Export-ModuleMember -Function @(
     'Get-RegValue', 'Set-RegValue', 'Invoke-ToolkitRollback',
     'Add-Result', 'Get-Results', 'Get-MachineInfo', 'Save-Report',
     'Get-ResultSummary', 'Show-Summary', 'Get-ExitCode',
+    'Set-RebootPending', 'Test-RebootPendingFlag',
     'Test-MaintenanceWindow', 'Get-ToolkitConfig',
+    'Enter-ToolkitInstance', 'Exit-ToolkitInstance',
     'Get-ToolkitVersion', 'Get-ToolkitLogPath', 'Test-ReportOnly'
 )

@@ -1,0 +1,30 @@
+{
+  "_comment": "Copiar a la raiz del share como manifest.json. El agente lo lee cada 4 h. Editar este archivo es la forma de desplegar cambios a la flota SIN tocar los equipos.",
+
+  "targetVersion": "0.1.0",
+  "minimumVersion": "0.1.0",
+  "_minimumVersion_comment": "Version de rescate. Si un equipo queda por debajo, se fuerza reinstalacion.",
+
+  "jobs": [
+    {
+      "ring": "0-lab",
+      "modules": ["location", "apps", "network"],
+      "apps": []
+    },
+    {
+      "ring": "1-piloto",
+      "modules": ["location", "network"],
+      "apps": []
+    },
+    {
+      "ring": "2-ampliacion",
+      "modules": ["location"],
+      "apps": []
+    },
+    {
+      "ring": "default",
+      "modules": ["network"],
+      "apps": []
+    }
+  ]
+}

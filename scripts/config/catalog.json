@@ -1,0 +1,136 @@
+{
+  "schemaVersion": 1,
+  "_comment": "Catalogo del toolkit. TODO lo marcado VERIFICAR debe validarse a mano en laboratorio antes de poner enabled=true.",
+
+  "packageRepo": "\\\\SRV-FILE\\Toolkit$\\packages",
+  "reportShare": "\\\\SRV-FILE\\Toolkit$",
+
+  "location": {
+    "lockDown": true,
+    "_lockDown_comment": "true = aplica LetAppsAccessLocation=1: el usuario NO puede desactivar la ubicacion desde Configuracion. Imprescindible en areas donde los agentes son administradores locales.",
+    "verifyWithApi": true,
+    "getPosition": false,
+    "_getPosition_comment": "true = intenta obtener coordenadas reales. Util en el piloto para validar precision (E911). Tarda hasta 20 s."
+  },
+
+  "network": {
+    "pingTargets": [
+      { "label": "Internet (Google DNS)", "host": "8.8.8.8" },
+      { "label": "Internet (Cloudflare)",  "host": "1.1.1.1" },
+      { "label": "Centralita / SBC",       "host": "CAMBIAR.pbx.empresa.com" },
+      { "label": "CRM",                    "host": "CAMBIAR.crm.empresa.com" }
+    ],
+    "dnsNames": [
+      "www.google.com",
+      "CAMBIAR.crm.empresa.com",
+      "CAMBIAR.pbx.empresa.com"
+    ],
+    "tcpTargets": [
+      { "label": "SIP TLS",   "host": "CAMBIAR.pbx.empresa.com", "port": 5061 },
+      { "label": "SIP TCP",   "host": "CAMBIAR.pbx.empresa.com", "port": 5060 },
+      { "label": "HTTPS CRM", "host": "CAMBIAR.crm.empresa.com", "port": 443 },
+      { "label": "VPN SSL",   "host": "CAMBIAR.vpn.empresa.com", "port": 443 }
+    ],
+    "tlsTargets": [
+      { "host": "CAMBIAR.crm.empresa.com", "port": 443 }
+    ],
+    "pingCount": 50
+  },
+
+  "apps": [
+    {
+      "id": "netextender",
+      "name": "SonicWall NetExtender",
+      "version": "10.3.2",
+      "enabled": false,
+      "installerType": "msi",
+      "source": {
+        "share": "netextender\\10.3.2\\NetExtender.msi",
+        "url": ""
+      },
+      "sha256": "",
+      "silentArgs": "/qn /norestart",
+      "properties": {
+        "SERVER": "",
+        "DOMAIN": ""
+      },
+      "detection": {
+        "method": "uninstall",
+        "displayName": "NetExtender",
+        "minVersion": "10.3.2"
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "VERIFICAR: la rama 10.2.x usa instalador EXE (InstallShield, conmutadores /s /v\"/qn\"); 10.3+ usa MSI. Confirmar version y nombres de propiedades SERVER/DOMAIN con el fabricante antes de activar."
+    },
+
+    {
+      "id": "goto",
+      "name": "GoTo (VERIFICAR producto exacto)",
+      "version": "0.0.0",
+      "enabled": false,
+      "installerType": "msi",
+      "source": {
+        "share": "goto\\CAMBIAR\\installer.msi",
+        "url": ""
+      },
+      "sha256": "",
+      "silentArgs": "/qn /norestart",
+      "properties": {
+        "COMPANYKEY": ""
+      },
+      "detection": {
+        "method": "uninstall",
+        "displayName": "GoTo",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "BLOQUEANTE: 'GoTo' son varios productos distintos (GoTo Resolve, GoToAssist Remote Support, GoTo Opener, GoTo Meeting, GoTo Connect), cada uno con su instalador y sus propiedades. Determinar cual se usa. La clave de empresa NO debe quedar aqui en claro: leerla del share con ACL (ver seccion 11 del PLAN)."
+    },
+
+    {
+      "id": "maxassist",
+      "name": "MaxAssist (VERIFICAR)",
+      "version": "0.0.0",
+      "enabled": false,
+      "installerType": "exe",
+      "source": {
+        "share": "maxassist\\CAMBIAR\\setup.exe",
+        "url": ""
+      },
+      "sha256": "",
+      "silentArgs": "/S",
+      "detection": {
+        "method": "uninstall",
+        "displayName": "MaxAssist",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010],
+      "requiresReboot": false,
+      "notes": "BLOQUEANTE: producto no identificado. Rellenar ficha completa (docs/APP-FICHAS/) probando el instalador a mano: tipo de instalador, conmutador silencioso real, y como detectarlo una vez instalado."
+    },
+
+    {
+      "id": "ejemplo-7zip",
+      "name": "7-Zip",
+      "version": "24.09",
+      "enabled": false,
+      "installerType": "msi",
+      "source": {
+        "share": "7zip\\24.09\\7z2409-x64.msi",
+        "url": "https://www.7-zip.org/a/7z2409-x64.msi"
+      },
+      "sha256": "",
+      "silentArgs": "/qn /norestart",
+      "detection": {
+        "method": "productCode",
+        "productCode": "{23170F69-40C1-2702-2409-000001000000}",
+        "minVersion": "24.09"
+      },
+      "successCodes": [0, 3010],
+      "requiresReboot": false,
+      "notes": "EJEMPLO FUNCIONAL con deteccion por productCode (metodo preferido para MSI). Sirve para probar el motor de instalacion de extremo a extremo antes de tener las fichas corporativas. Rellenar sha256 con Get-FileHash antes de usarlo en produccion."
+    }
+  ]
+}

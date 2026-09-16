@@ -21,6 +21,40 @@
 
 ---
 
+## 0 bis. Estado actual del repositorio
+
+Lo que ya está escrito y lo que falta. **Nada de esto se ha podido ejecutar todavía**: el código se desarrolló en Linux y requiere Windows para compilarse y probarse.
+
+| Pieza | Estado | Archivo |
+|---|---|---|
+| Motor común (log, registro con reversión, mutex, resultados, reportes) | Escrito | `scripts/modules/Toolkit.Core.psm1` |
+| Módulo A — Ubicación (4 capas + perfiles de usuario + verificación por API) | Escrito | `scripts/modules/Toolkit.Location.psm1` |
+| Módulo B — Aplicaciones (catálogo, hash, mutex MSI, reintentos, verificación) | Escrito | `scripts/modules/Toolkit.Apps.psm1` |
+| Módulo C — Red (latencia, jitter, pérdida, DNS, MTU, TLS, proxy) | Escrito | `scripts/modules/Toolkit.Network.psm1` |
+| Orquestador (fuente única de la lógica) | Escrito | `scripts/Invoke-ToolkitRun.ps1` |
+| Host C# con scripts embebidos + interfaz + CLI + agente | Escrito | `src/Toolkit.App/` |
+| Generador de fichas de aplicación | Escrito | `scripts/tools/New-AppFicha.ps1` |
+| Despliegue masivo WinRM/SMB | Escrito | `scripts/deploy/Deploy-Remote.ps1` |
+| Compilación + validación + firma | Escrito | `build/build.ps1` |
+| **Compilar y probar en Windows** | **Pendiente** | — |
+| **Fichas reales de GoTo / NetExtender / MaxAssist** | **Pendiente — bloqueante** | `docs/APP-FICHAS/` |
+| **Certificado de firma de código** | **Pendiente — dependencia más lenta** | §10 |
+| **Destinos reales de red en el catálogo** | **Pendiente** | `scripts/config/catalog.json` (marcados `CAMBIAR`) |
+| `RUNBOOK.md` para soporte nivel 1 | Pendiente | `docs/` |
+
+### Primer paso real
+
+```powershell
+# En una maquina Windows con el SDK de .NET instalado:
+cd build
+.\build.ps1                     # valida los scripts, compila, verifica recursos
+..\dist\Toolkit.exe /report     # auditoria: no modifica nada
+```
+
+`/report` es el primer comando que debe ejecutarse siempre: dice en qué estado está el equipo sin tocarlo.
+
+---
+
 ## 1. Contexto y restricciones
 
 | Factor | Situación | Consecuencia para el diseño |
@@ -41,18 +75,24 @@
 
 ---
 
-## 2. Por qué un `.exe` y no scripts
+## 2. Por qué un `.exe` que *contiene* los scripts
 
-Un paquete de `.ps1` parece más simple, pero en 400 equipos se rompe por razones operativas, no técnicas:
+La pregunta no es "¿exe o scripts?". Los scripts son el trabajo real: activar la ubicación, instalar las aplicaciones, medir la red. El `.exe` es **el envase**: quien los transporta, los ejecuta en el orden correcto y los protege.
 
-| Problema con scripts sueltos | Cómo lo resuelve un `.exe` |
+Los `.psm1` viven **dentro** del binario como recursos embebidos y **nunca se escriben en disco**. Esto no es un detalle de implementación; es lo que resuelve los problemas operativos de desplegar a 400 equipos:
+
+| Problema con `.ps1` sueltos en disco | Cómo lo resuelve el exe con los scripts dentro |
 |---|---|
-| `ExecutionPolicy` bloqueando la ejecución | El binario no la consulta. |
-| AMSI / antivirus bloqueando bloques de script y comandos codificados | Código compilado y **firmado** — se puede poner en lista blanca por certificado, no por hash de cada archivo. |
-| El técnico ejecuta el script equivocado o en el orden equivocado | Un único punto de entrada, con orden y dependencias internas. |
-| Alguien abre el `.ps1` y ve la clave de instalación de GoTo | Los secretos van cifrados como recurso embebido (ver §11). |
-| Alguien edita el script en un equipo y diverge la flota | El binario es inmutable; su hash es verificable. |
-| Registrar qué versión corrió en cada PC | El exe lleva número de versión propio y lo reporta. |
+| `ExecutionPolicy` bloqueando la ejecución | El host crea su propio *runspace* en proceso, donde la política no aplica al texto de script. |
+| Antivirus poniendo en cuarentena scripts sueltos | Un único binario **firmado**, en lista blanca por certificado en vez de por hash de cada archivo. |
+| El técnico ejecuta el script equivocado o en mal orden | Un único punto de entrada; el orden y las dependencias están dentro. |
+| Alguien abre el `.ps1` y lee la clave de empresa de GoTo | Los secretos no viajan en claro (§11) y los scripts no son legibles de un vistazo. |
+| Alguien edita un script en un equipo y la flota diverge | El binario es inmutable y su SHA-256 es verificable. |
+| Saber qué versión corrió en cada PC | El exe lleva su propia versión y la reporta en cada ejecución. |
+
+### La regla que hace que esto funcione
+
+> **Una sola fuente de lógica.** La orquestación vive en `Invoke-ToolkitRun.ps1` y la consumen **dos** caminos: el exe (que lo lleva embebido) y `Toolkit.ps1` (envoltorio de línea de comandos para depurar sin recompilar). La interfaz gráfica y el despliegue masivo ejecutan literalmente el mismo código, así que no pueden divergir.
 
 ---
 
@@ -68,83 +108,100 @@ Un paquete de `.ps1` parece más simple, pero en 400 equipos se rompe por razone
 | **Go** (`go:embed`) | 8–15 MB | Ninguna | ✅ | ⚠️ Excelente binario, pero el acceso a APIs de Windows (registro, servicios, perfiles de usuario) es mucho más verboso vía `syscall`. Más horas de desarrollo. |
 | **AutoIt / NSIS** | Pequeño | Ninguna | ✅ | ❌ Marcados por AV con frecuencia. Mantenimiento pobre a largo plazo. |
 
-### Veredicto: **C# + .NET Framework 4.8, WinForms, compilado a `x64` single-file**
+### Veredicto: **C# + .NET Framework 4.8, WinForms, con los scripts embebidos y ejecutados en proceso**
 
 Razones concretas para *este* proyecto:
 
-- **Cero runtime que desplegar.** Con 400 equipos sin herramienta de gestión, tener que instalar .NET 8 primero convertiría el proyecto en dos proyectos.
-- **Acceso nativo de primera clase** a lo que el toolkit realmente hace: `Microsoft.Win32.Registry`, `System.ServiceProcess.ServiceController`, `System.Net.NetworkInformation.Ping`, `System.Diagnostics.Process`. **No se necesita PowerShell en absoluto** para el trabajo real — y eso elimina de golpe toda una clase de problemas (AMSI, políticas de ejecución, logging de bloques de script).
-- **Firmable con Authenticode** → se resuelve SmartScreen y la lista blanca del antivirus de una vez para siempre (§10).
-- **Manifiesto embebido** con `requireAdministrator` → elevación automática y predecible.
+- **Cero runtime que desplegar.** Con 400 equipos sin herramienta de gestión, tener que instalar .NET 8 primero convertiría esto en dos proyectos.
+- **`System.Management.Automation` ya está en el equipo.** Se referencia contra los *reference assemblies* de PowerShell 5.1, pero en tiempo de ejecución resuelve contra la del GAC. **No se distribuye ninguna DLL de PowerShell.**
+- **Firmable con Authenticode** → resuelve SmartScreen y la lista blanca del antivirus de una vez (§10).
+- **Manifiesto embebido** con `requireAdministrator` → elevación predecible.
 
-> **Regla de diseño:** el toolkit **no invoca `powershell.exe`**. Todo se hace con APIs .NET nativas. La única excepción admitida es lanzar instaladores de terceros (`msiexec`, `setup.exe`), que es inevitable.
+### Por qué los scripts se ejecutan *en proceso* y no lanzando `powershell.exe`
+
+Es la decisión técnica central del diseño:
+
+| | Lanzar `powershell.exe` | **Runspace en proceso (elegido)** |
+|---|---|---|
+| Scripts en disco | Sí, extraídos a una carpeta temporal | **No, nunca tocan el disco** |
+| `ExecutionPolicy` | Hay que sortearla con `-ExecutionPolicy Bypass` | No aplica al texto de script del runspace propio |
+| Salida en vivo para la interfaz | Hay que parsear stdout | Se enganchan los flujos (`Information`, `Warning`, `Error`) directamente |
+| Control de tiempo límite | Matar un proceso hijo | `PowerShell.Stop()` sobre la invocación |
+| Procesos que auditar | Dos | Uno |
+
+La implementación está en `src/Toolkit.App/ScriptHost.cs`: cada `.psm1` se carga con `New-Module` desde su texto embebido y se importa al ámbito global del runspace.
+
+> **La única excepción admitida** a "todo dentro" es lanzar instaladores de terceros (`msiexec.exe`, `setup.exe`) y tres utilidades del sistema (`reg.exe` para cargar colmenas de usuario, `schtasks.exe`, `icacls.exe`). Es inevitable y está acotado.
 
 ---
 
 ## 4. Arquitectura del ejecutable
 
 ```
-                    ┌─────────────────────────────┐
-                    │        Toolkit.exe          │
-                    │   (firmado, x64, ~3 MB)     │
-                    └──────────────┬──────────────┘
-                                   │
-         ┌─────────────────────────┼─────────────────────────┐
-         │                         │                         │
-    ┌────▼─────┐            ┌──────▼──────┐          ┌───────▼───────┐
-    │   Capa   │            │    Capa     │          │     Capa      │
-    │ Interfaz │            │   Núcleo    │          │   Recursos    │
-    ├──────────┤            ├─────────────┤          ├───────────────┤
-    │ GUI      │            │ Motor de    │          │ catalog.json  │
-    │ WinForms │            │ tareas      │          │ (apps)        │
-    │          │            │ (Test/Set)  │          │               │
-    │ CLI      │───────────▶│             │◀─────────│ secrets.dat   │
-    │ silencio │            │ Logger      │          │ (DPAPI)       │
-    │          │            │ Reporter    │          │               │
-    │ Reporte  │            │ Elevación   │          │ manifiesto    │
-    └──────────┘            └──────┬──────┘          └───────────────┘
-                                   │
-         ┌─────────────────────────┼─────────────────────────┐
-         │                         │                         │
-  ┌──────▼──────┐          ┌───────▼───────┐        ┌────────▼────────┐
-  │  MÓDULO A   │          │   MÓDULO B    │        │    MÓDULO C     │
-  │  Ubicación  │          │     Apps      │        │      Red        │
-  │             │          │               │        │                 │
-  │ · lfsvc     │          │ · Detección   │        │ · Conectividad  │
-  │ · Políticas │          │ · Descarga    │        │ · Latencia/     │
-  │ · Consent   │          │ · Instalación │        │   jitter/       │
-  │   HKLM+HKCU │          │   silenciosa  │        │   pérdida       │
-  │ · Blindaje  │          │ · Verificación│        │ · DNS / MTU     │
-  └─────────────┘          └───────────────┘        └─────────────────┘
+  Toolkit.exe  (firmado, x64, ~2 MB)
+  ├─ CAPA C#  ─ el envase
+  │   Program.cs / CommandLine.cs   modos de ejecucion y argumentos
+  │   MainForm.cs                   interfaz para el tecnico en sitio
+  │   ScriptHost.cs                 runspace en proceso + limite de tiempo
+  │   AgentInstaller.cs             auto-instalacion como agente
+  │   EmbeddedScripts.cs            lectura de los recursos embebidos
+  │
+  └─ RECURSOS EMBEBIDOS  ─ el trabajo real
+      Scripts/Toolkit.Core.psm1       log, registro con reversion, resultados
+      Scripts/Toolkit.Location.psm1   MODULO A  ubicacion
+      Scripts/Toolkit.Apps.psm1       MODULO B  aplicaciones
+      Scripts/Toolkit.Network.psm1    MODULO C  red
+      Scripts/Invoke-ToolkitRun.ps1   ORQUESTADOR (fuente unica de la logica)
+      Scripts/catalog.json            catalogo por defecto
 ```
 
-### Modos de ejecución (un binario, tres comportamientos)
+**Flujo de una ejecución:**
+
+```
+  Toolkit.exe /silent /all
+        |
+        v
+  ScriptHost.Open()          abre el runspace, ExecutionPolicy = Bypass
+        |
+        v
+  ScriptHost.LoadModules()   New-Module desde el texto embebido (Core primero)
+        |
+        v
+  Invoke-ToolkitRun.ps1      toma el mutex global -> modulos A/B/C -> reporte
+        |
+        v
+  codigo de salida           0 / 3010 / 1001 / 1002 / 1003 / 5 / 1
+```
+
+### Modos de ejecución (un binario, varios comportamientos)
 
 | Invocación | Uso | Comportamiento |
 |---|---|---|
-| Doble clic | Técnico en sitio | GUI con casillas por módulo, botón *Aplicar*, log en vivo. |
-| `Toolkit.exe /silent /all` | Despliegue masivo, tarea programada | Sin ventana. Aplica todo. Escribe log local + reporta al share. Devuelve código de salida. |
-| `Toolkit.exe /silent /modules=location,apps` | Despliegue selectivo | Solo los módulos indicados. |
-| `Toolkit.exe /report` | Auditoría | **No modifica nada.** Solo evalúa y reporta estado. Útil para medir cobertura antes y después. |
-| `Toolkit.exe /install-agent` | Bootstrap | Se copia a `C:\ProgramData\Toolkit\` y crea la tarea programada auto-actualizable (§12). |
-| `Toolkit.exe /uninstall-agent` | Reversión | Elimina el agente. Obligatorio tenerlo desde el día 1. |
+| Doble clic | Técnico en sitio | Interfaz con casillas por módulo, log en vivo, botón *Revertir*. |
+| `Toolkit.exe /silent /all` | Despliegue masivo, tarea programada | Sin ventana. Aplica todo. Reporta y devuelve código de salida. |
+| `Toolkit.exe /silent /modules:location,network` | Despliegue selectivo | Solo los módulos indicados. |
+| `Toolkit.exe /report` | Auditoría | **No modifica nada.** Mide cobertura de la flota. |
+| `Toolkit.exe /install-agent /share:... /ring:...` | Bootstrap | Se copia a `C:\ProgramData\Toolkit\bin`, aplica ACL y crea la tarea programada. |
+| `Toolkit.exe /rollback` | Reversión | Deshace los cambios de registro registrados. |
+| `Toolkit.exe /uninstall-agent` | Retirada | Obligatorio tenerlo desde el día 1. |
 
 ### Patrón de diseño: `Test` / `Set` (idempotencia)
 
-Cada acción implementa una interfaz común:
+Cada acción evalúa antes de actuar. `Set-RegValue` devuelve si **realmente** cambió algo, de modo que:
 
-```csharp
-public interface ITask
-{
-    string   Name        { get; }
-    TaskScope Scope      { get; }     // Machine | User | Both
-    bool     Test();                  // ¿ya está en el estado deseado?
-    TaskResult Set();                 // aplicar (solo si Test() == false)
-    TaskResult Rollback();            // revertir (obligatorio)
-}
-```
+- ejecutar dos veces seguidas no produce efectos la segunda,
+- el modo `/report` sale gratis (solo se evalúa, no se aplica),
+- la medición de cobertura de los 400 equipos es honesta.
 
-Esto da gratis: ejecución repetible sin efectos secundarios, el modo `/report` (solo llama a `Test()`), y medición honesta de cobertura de la flota.
+### Garantías de estabilidad
+
+| Garantía | Implementación |
+|---|---|
+| Nunca dos ejecuciones simultáneas | Mutex global `ToolkitCallCenter` (`Enter-ToolkitInstance`). Sin él, la tarea del agente y el técnico pueden corromper `rollback.json`. |
+| Nunca un proceso colgado | Tiempo límite global de 30 min en `ScriptHost.Run` + `ExecutionTimeLimit` de la tarea programada. |
+| Nunca un `rollback.json` truncado | Escritura atómica (temporal + reemplazo). |
+| Nunca dos instaladores MSI a la vez | Espera del mutex `Global\_MSIExecute` y reintento del código 1618. |
+| Siempre reversible | Cada valor de registro se respalda antes de escribirse. |
 
 ---
 
@@ -152,33 +209,42 @@ Esto da gratis: ejecución repetible sin efectos secundarios, el modo `/report` 
 
 ```
 Toolkit/
-├── src/
-│   ├── Toolkit.App/                    # Punto de entrada, GUI, parseo CLI
-│   │   ├── Program.cs
-│   │   ├── MainForm.cs
-│   │   ├── app.manifest                # requireAdministrator + DPI aware
-│   │   └── Resources/
-│   │       ├── catalog.json            # catálogo de aplicaciones (embebido)
-│   │       └── secrets.dat             # claves cifradas (embebido)
-│   ├── Toolkit.Core/                   # Motor: ITask, Logger, Reporter, Registry helpers
-│   ├── Toolkit.Modules.Location/
-│   ├── Toolkit.Modules.Apps/
-│   ├── Toolkit.Modules.Network/
-│   └── Toolkit.Agent/                  # Modo auto-actualizable
-├── tests/
-│   └── Toolkit.Tests/                  # xUnit — Test()/Set() sobre registro simulado
-├── build/
-│   ├── build.ps1                       # compilar + ILMerge/Costura + firmar
-│   └── sign.ps1
+├── src/Toolkit.App/                  # El envase (C#)
+│   ├── Toolkit.App.csproj            #   <EmbeddedResource> = los scripts entran aqui
+│   ├── app.manifest                  #   requireAdministrator + DPI
+│   ├── Program.cs                    #   punto de entrada, modos
+│   ├── CommandLine.cs                #   parseo de /silent /all /modules:...
+│   ├── ScriptHost.cs                 #   runspace en proceso + limite de tiempo
+│   ├── EmbeddedScripts.cs            #   lectura de recursos + cascada del catalogo
+│   ├── AgentInstaller.cs             #   /install-agent y /uninstall-agent
+│   └── MainForm.cs                   #   interfaz del tecnico
+│
+├── scripts/                          # El trabajo real (PowerShell, embebido en el exe)
+│   ├── Invoke-ToolkitRun.ps1         #   ORQUESTADOR - fuente unica de la logica
+│   ├── Toolkit.ps1                   #   envoltorio CLI para depurar sin recompilar
+│   ├── modules/
+│   │   ├── Toolkit.Core.psm1         #   log, registro+reversion, mutex, resultados
+│   │   ├── Toolkit.Location.psm1     #   MODULO A
+│   │   ├── Toolkit.Apps.psm1         #   MODULO B
+│   │   └── Toolkit.Network.psm1      #   MODULO C
+│   ├── config/catalog.json           #   catalogo de apps y destinos de red
+│   ├── tools/
+│   │   └── New-AppFicha.ps1          #   genera la ficha de una app desde su instalador
+│   └── deploy/
+│       ├── Install-Agent.ps1         #   equivalente al /install-agent del exe
+│       ├── Invoke-AgentCheck.ps1     #   latido del agente (camino scripts)
+│       ├── Deploy-Remote.ps1         #   despliegue masivo WinRM / SMB
+│       └── manifest.example.json     #   manifiesto del share
+│
+├── build/build.ps1                   # valida sintaxis -> compila -> verifica recursos -> firma
 ├── docs/
-│   ├── PLAN.md                         # este documento
-│   ├── RUNBOOK.md                      # guía operativa para el equipo de soporte
-│   └── APP-FICHAS/                     # una ficha por aplicación (§7)
-└── dist/
-    └── Toolkit.exe                     # artefacto firmado
+│   ├── PLAN.md                       # este documento
+│   ├── RUNBOOK.md                    # guia operativa de soporte
+│   └── APP-FICHAS/                   # una ficha por aplicacion
+└── dist/Toolkit.exe                  # artefacto firmado
 ```
 
-**Empaquetado a un solo archivo:** `Costura.Fody` (embebe las DLL como recursos y las carga en memoria) o ILMerge. Resultado: un `.exe` sin DLL acompañantes.
+> **`build.ps1` valida la sintaxis de cada `.psm1` antes de compilar.** Un error de sintaxis en un script no rompe la compilación de C#: se embebería igual y explotaría en el equipo del cliente. Ese chequeo previo es obligatorio.
 
 ---
 
@@ -283,38 +349,59 @@ Cada clave escrita se guarda con su valor previo en `C:\ProgramData\Toolkit\roll
 
 > **Nada de esto se codifica a ciegas.** Cada aplicación necesita su **ficha** validada en laboratorio antes de entrar al catálogo.
 
-### Plantilla de ficha de aplicación (`docs/APP-FICHAS/<app>.md`)
+### Las fichas no se escriben a mano: se generan
 
-```yaml
-nombre:            NetExtender
-version:           10.3.2
-tipo_instalador:   MSI | InnoSetup | NSIS | InstallShield | Custom
-origen:            https://... (URL oficial)  |  \\servidor\repo\...
-sha256:            <hash del instalador — obligatorio>
-comando_silencioso: msiexec /i "{pkg}" /qn /norestart /l*v "{log}"
-parametros:        # claves, servidor, perfil de conexión
-  SERVER:          vpn.empresa.com
-deteccion:         # cómo saber si YA está instalado
-  metodo:          registro_uninstall | version_archivo | servicio
-  clave:           HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GUID}
-codigos_exito:     [0, 3010, 1641]
-requiere_reinicio: sí/no
-requiere_usuario:  no          # ¿necesita contexto de usuario interactivo?
-notas:             ...
+Rellenar el catálogo a ojo es la causa número uno de instalaciones que fallan en masa. `scripts/tools/New-AppFicha.ps1` apunta a un instalador real, lo inspecciona y emite el bloque JSON listo para pegar más la ficha en markdown:
+
+```powershell
+.\New-AppFicha.ps1 -Path 'D:\instaladores\NetExtender.msi' -Id netextender -OutputDir ..\..\docs\APP-FICHAS
 ```
+
+Qué extrae automáticamente:
+
+| Tipo | Qué obtiene |
+|---|---|
+| **MSI** | `ProductCode` (GUID exacto), `ProductName`, `ProductVersion`, fabricante y **la lista de propiedades públicas que admite** — ahí es donde aparecen `SERVER`, `COMPANYKEY`, `LICENSEKEY` y demás |
+| **EXE** | Empaquetador (Inno / NSIS / InstallShield / WiX burn / 7z SFX) y, con él, el conmutador silencioso correcto |
+| Ambos | SHA-256 (obligatorio en el catálogo) y estado de la firma Authenticode del instalador |
+
+Esto es lo que desbloquea GoTo, NetExtender y MaxAssist: en lugar de adivinar los conmutadores, se leen del propio instalador.
+
+> **Sigue siendo obligatorio validar en máquina virtual limpia antes de `enabled: true`.** La ficha generada incluye la lista de comprobación. El generador reduce la adivinanza; no la elimina.
+
+### Métodos de detección disponibles
+
+Saber si una aplicación ya está instalada es tan importante como instalarla: sin detección fiable no hay idempotencia, y el toolkit reinstalaría en cada ejecución.
+
+| Método | Cómo funciona | Cuándo usarlo |
+|---|---|---|
+| **`productCode`** | Busca el GUID del MSI en la rama de desinstalación | **Preferido para todo MSI.** Exacto, inmune a cambios de nombre comercial y a traducciones |
+| `uninstall` | Coincidencia parcial del `DisplayName` | Solo cuando no hay `ProductCode` (instaladores EXE) |
+| `file` | Existencia de un archivo + versión | Aplicaciones portables o que no se registran |
+| `service` | Existencia de un servicio | Agentes que instalan servicio (GoTo, MaxAssist) |
+
+Con `minVersion`, una versión instalada por debajo del mínimo cuenta como *no instalada*, de modo que el mismo mecanismo sirve para actualizar.
 
 ### Motor de instalación — secuencia por aplicación
 
 ```
-1. Detectar       → ¿ya instalado y en versión ≥ objetivo?  → SALTAR
-2. Obtener        → recurso compartido (primero) → URL oficial (respaldo)
-3. Verificar      → SHA-256 contra la ficha. Si no coincide: ABORTAR y alertar.
-4. Instalar       → ejecutar en silencio, con tiempo límite (10 min por defecto)
-5. Interpretar    → código de salida contra codigos_exito. 3010/1641 = reinicio pendiente
-6. Verificar      → repetir la detección. Si sigue sin detectarse: FALLO real.
-7. Configurar     → parámetros post-instalación (servidor VPN, clave de empresa)
-8. Registrar      → app, versión, resultado, duración
+1. Detectar       -> ya instalado y en version >= objetivo?  -> SALTAR
+2. Obtener        -> share (primero) -> URL oficial (respaldo)
+3. Verificar      -> SHA-256 contra la ficha. Si no coincide: ABORTAR y alertar
+4. Esperar turno  -> mutex Global\_MSIExecute: Windows Installer es de instancia unica
+5. Instalar       -> silencioso, con tiempo limite (15 min por defecto)
+6. Interpretar    -> codigo contra successCodes, traducido a texto legible
+                     1618 (otra instalacion en curso) -> UN reintento a los 30 s
+                     3010 / 1641                      -> marca reinicio pendiente
+7. Verificar      -> repetir la deteccion. Exito del instalador != aplicacion instalada
+8. Registrar      -> app, version, resultado, duracion
 ```
+
+Tres detalles que separan un motor que funciona en laboratorio de uno que funciona en 400 equipos:
+
+- **Windows Installer solo admite una instalación a la vez en todo el equipo.** Si Windows Update está instalando algo, `msiexec` devuelve 1618 y la instalación se pierde. El motor espera el mutex y reintenta.
+- **Un código de salida 0 no garantiza que la aplicación esté instalada.** Siempre se vuelve a detectar después. Si el instalador dice que sí y la detección dice que no, es fallo real y casi siempre significa que la ficha de detección está mal.
+- **`silentArgs` vacío es un fallo, no un caso por defecto.** Un instalador sin conmutador silencioso abriría interfaz en un equipo desatendido y se quedaría colgado hasta el tiempo límite. El motor lo rechaza antes de lanzarlo.
 
 ### Conmutadores silenciosos por tipo de instalador (referencia)
 
@@ -396,17 +483,19 @@ Campos obligatorios en cada reporte: nombre del equipo, número de serie, usuari
 | `1001` | Módulo de ubicación falló |
 | `1002` | Una o más aplicaciones fallaron |
 | `1003` | Diagnóstico de red con estado crítico |
-| `1010` | Share inalcanzable |
 
-Son consumibles por cualquier RMM o tarea programada — imprescindible para medir cobertura sin entrar equipo por equipo.
+Son consumibles por cualquier RMM, GPO o tarea programada — imprescindible para medir cobertura sin entrar equipo por equipo.
+
+> **`3010` se genera de verdad, no solo se documenta.** Cualquier instalador que devuelva 3010 o 1641 marca el equipo como *reinicio pendiente*, y la ejecución completa termina con 3010 aunque todo lo demás haya ido bien. Sin esto, el equipo queda a medias y nadie se entera: es el fallo silencioso clásico del despliegue masivo.
 
 ### Seguridad de la ejecución
 
 - Manifiesto con `requireAdministrator`.
 - Si no está elevado y hay sesión interactiva: reelevar vía UAC. Si es desatendido: salir con código 5 y registrarlo.
-- Tiempo límite global (30 min) con auto-terminación — nunca dejar un proceso colgado en 400 equipos.
-- Un único mutex global: nunca dos instancias simultáneas.
-- **Ventana de mantenimiento:** en modo desatendido, comprobar si el equipo está en horario productivo. Si el módulo a ejecutar es intrusivo (instalación, reinicio), aplazar. Configurable.
+- Tiempo límite global de 30 min con auto-terminación (`ScriptHost.Run`) — nunca un proceso colgado en 400 equipos.
+- Mutex global `ToolkitCallCenter`: nunca dos instancias aplicando cambios a la vez. El modo `/report` queda exento porque no escribe nada.
+- **Ventana de mantenimiento:** en modo desatendido se comprueba el horario antes de instalar aplicaciones. Por defecto 23:00–07:00; **hay que ajustarlo a los turnos reales del call center antes de desplegar**, o en una operación 24/7 no se instalará nunca nada. El técnico en sitio la ignora (está delante del equipo).
+- Reversión: cada valor de registro se respalda antes de escribirse, con escritura atómica del archivo de reversión.
 
 ---
 
