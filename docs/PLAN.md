@@ -1,0 +1,567 @@
+# Toolkit Windows — Call Center (400 PCs)
+### Plan técnico de arquitectura, construcción y despliegue
+
+**Versión:** 0.1 (borrador para revisión)
+**Fecha:** 2026-09-15
+**Entregable:** un único ejecutable `Toolkit.exe` firmado, sin dependencias, que configura ubicación (servicio + políticas), instala el stack de aplicaciones corporativas y diagnostica la red.
+
+---
+
+## 0. Resumen ejecutivo
+
+| | |
+|---|---|
+| **Qué se construye** | Un binario único `Toolkit.exe` (~2–4 MB) que contiene todos los módulos embebidos. Sin `.ps1` sueltos, sin instalador, sin runtime que instalar. |
+| **Tecnología principal** | **C# sobre .NET Framework 4.8** — presente de fábrica en todo Windows 10 1903+ y Windows 11. Cero despliegue de runtime. |
+| **Tres modos en un solo binario** | GUI (técnico en sitio) · Silencioso (despliegue masivo) · Solo-reporte (auditoría sin cambios) |
+| **El riesgo real no es el código** | Es el despliegue. Con 400 equipos y cero infraestructura de gestión, el 70% del esfuerzo del proyecto está en **cómo llega y se ejecuta el exe**, no en qué hace. |
+| **Duración estimada** | 6–8 semanas hasta cobertura del 95% de la flota. |
+
+> **Decisión central de este plan:** el `.exe` no es solo una herramienta, es también **el vehículo de despliegue**. En su primera ejecución se instala a sí mismo como agente (tarea programada) que se auto-actualiza desde un recurso compartido. Una sola pasada manual dolorosa por los 400 equipos, y nunca más.
+
+---
+
+## 1. Contexto y restricciones
+
+| Factor | Situación | Consecuencia para el diseño |
+|---|---|---|
+| **Escala** | 400 PCs | Todo debe ser idempotente y desatendido. Nada que requiera intervención humana por equipo. |
+| **Gestión actual** | Ninguna. Todo manual hoy. | No hay GPO, ni Intune, ni RMM. Hay que construir el canal de despliegue desde cero. |
+| **Estado de la flota** | Mixta: equipos nuevos (reimagen) + equipos ya en producción | Dos caminos de entrada, un solo código base. En producción: sin reinicios forzados, ejecución fuera de horario. |
+| **Privilegios** | Heterogéneos: unas áreas con admin local, otras no | El exe debe correr como SYSTEM y resolver explícitamente lo que necesita contexto de usuario. Además debe **blindar** la configuración contra usuarios admin que la reviertan. |
+| **Operación crítica** | Agentes en llamada | Ninguna acción puede cortar audio, red o sesión durante horario productivo. |
+
+### Decisiones aún pendientes de confirmar (bloquean la fase 1)
+
+1. **¿Los equipos están en dominio Active Directory, o son workgroup?** Si hay dominio (aunque no se use para políticas), el despliegue se simplifica radicalmente vía GPO. *Esta es la pregunta más importante del proyecto.*
+2. **¿Existe una contraseña de administrador local común / LAPS?** Determina si se puede usar PsExec/WinRM en masa.
+3. **¿Por qué se necesita la ubicación?** Lo más probable en un call center: llamadas de emergencia dinámicas (E911) del softphone, o control de asistencia de agentes remotos. Define si basta con el servicio activo o hace falta consentimiento por aplicación concreta.
+4. **Build exactos de Windows en la flota** (10 22H2 / 11 23H2 / 11 24H2). Las claves de ubicación cambian de comportamiento entre builds.
+5. **Lista definitiva y versión de cada aplicación** (ver §7).
+
+---
+
+## 2. Por qué un `.exe` y no scripts
+
+Un paquete de `.ps1` parece más simple, pero en 400 equipos se rompe por razones operativas, no técnicas:
+
+| Problema con scripts sueltos | Cómo lo resuelve un `.exe` |
+|---|---|
+| `ExecutionPolicy` bloqueando la ejecución | El binario no la consulta. |
+| AMSI / antivirus bloqueando bloques de script y comandos codificados | Código compilado y **firmado** — se puede poner en lista blanca por certificado, no por hash de cada archivo. |
+| El técnico ejecuta el script equivocado o en el orden equivocado | Un único punto de entrada, con orden y dependencias internas. |
+| Alguien abre el `.ps1` y ve la clave de instalación de GoTo | Los secretos van cifrados como recurso embebido (ver §11). |
+| Alguien edita el script en un equipo y diverge la flota | El binario es inmutable; su hash es verificable. |
+| Registrar qué versión corrió en cada PC | El exe lleva número de versión propio y lo reporta. |
+
+---
+
+## 3. Elección de tecnología
+
+### Comparativa evaluada
+
+| Opción | Tamaño | Dependencias | Firma | Veredicto |
+|---|---|---|---|---|
+| **PS2EXE** (envolver PowerShell en exe) | ~100 KB | PowerShell + el script se extrae en disco | Débil | ❌ Es un envoltorio, no una solución. Altísima tasa de falsos positivos en AV. El script se puede extraer trivialmente. |
+| **C# / .NET Framework 4.8** | 2–4 MB | **Ninguna** (viene en Windows) | ✅ Authenticode | ✅ **ELEGIDA** |
+| **C# / .NET 8 self-contained** | 60–90 MB (o ~18 MB con trimming) | Ninguna | ✅ | ⚠️ Técnicamente superior, pero el tamaño complica la distribución sin infraestructura. Alternativa si más adelante se moderniza. |
+| **Go** (`go:embed`) | 8–15 MB | Ninguna | ✅ | ⚠️ Excelente binario, pero el acceso a APIs de Windows (registro, servicios, perfiles de usuario) es mucho más verboso vía `syscall`. Más horas de desarrollo. |
+| **AutoIt / NSIS** | Pequeño | Ninguna | ✅ | ❌ Marcados por AV con frecuencia. Mantenimiento pobre a largo plazo. |
+
+### Veredicto: **C# + .NET Framework 4.8, WinForms, compilado a `x64` single-file**
+
+Razones concretas para *este* proyecto:
+
+- **Cero runtime que desplegar.** Con 400 equipos sin herramienta de gestión, tener que instalar .NET 8 primero convertiría el proyecto en dos proyectos.
+- **Acceso nativo de primera clase** a lo que el toolkit realmente hace: `Microsoft.Win32.Registry`, `System.ServiceProcess.ServiceController`, `System.Net.NetworkInformation.Ping`, `System.Diagnostics.Process`. **No se necesita PowerShell en absoluto** para el trabajo real — y eso elimina de golpe toda una clase de problemas (AMSI, políticas de ejecución, logging de bloques de script).
+- **Firmable con Authenticode** → se resuelve SmartScreen y la lista blanca del antivirus de una vez para siempre (§10).
+- **Manifiesto embebido** con `requireAdministrator` → elevación automática y predecible.
+
+> **Regla de diseño:** el toolkit **no invoca `powershell.exe`**. Todo se hace con APIs .NET nativas. La única excepción admitida es lanzar instaladores de terceros (`msiexec`, `setup.exe`), que es inevitable.
+
+---
+
+## 4. Arquitectura del ejecutable
+
+```
+                    ┌─────────────────────────────┐
+                    │        Toolkit.exe          │
+                    │   (firmado, x64, ~3 MB)     │
+                    └──────────────┬──────────────┘
+                                   │
+         ┌─────────────────────────┼─────────────────────────┐
+         │                         │                         │
+    ┌────▼─────┐            ┌──────▼──────┐          ┌───────▼───────┐
+    │   Capa   │            │    Capa     │          │     Capa      │
+    │ Interfaz │            │   Núcleo    │          │   Recursos    │
+    ├──────────┤            ├─────────────┤          ├───────────────┤
+    │ GUI      │            │ Motor de    │          │ catalog.json  │
+    │ WinForms │            │ tareas      │          │ (apps)        │
+    │          │            │ (Test/Set)  │          │               │
+    │ CLI      │───────────▶│             │◀─────────│ secrets.dat   │
+    │ silencio │            │ Logger      │          │ (DPAPI)       │
+    │          │            │ Reporter    │          │               │
+    │ Reporte  │            │ Elevación   │          │ manifiesto    │
+    └──────────┘            └──────┬──────┘          └───────────────┘
+                                   │
+         ┌─────────────────────────┼─────────────────────────┐
+         │                         │                         │
+  ┌──────▼──────┐          ┌───────▼───────┐        ┌────────▼────────┐
+  │  MÓDULO A   │          │   MÓDULO B    │        │    MÓDULO C     │
+  │  Ubicación  │          │     Apps      │        │      Red        │
+  │             │          │               │        │                 │
+  │ · lfsvc     │          │ · Detección   │        │ · Conectividad  │
+  │ · Políticas │          │ · Descarga    │        │ · Latencia/     │
+  │ · Consent   │          │ · Instalación │        │   jitter/       │
+  │   HKLM+HKCU │          │   silenciosa  │        │   pérdida       │
+  │ · Blindaje  │          │ · Verificación│        │ · DNS / MTU     │
+  └─────────────┘          └───────────────┘        └─────────────────┘
+```
+
+### Modos de ejecución (un binario, tres comportamientos)
+
+| Invocación | Uso | Comportamiento |
+|---|---|---|
+| Doble clic | Técnico en sitio | GUI con casillas por módulo, botón *Aplicar*, log en vivo. |
+| `Toolkit.exe /silent /all` | Despliegue masivo, tarea programada | Sin ventana. Aplica todo. Escribe log local + reporta al share. Devuelve código de salida. |
+| `Toolkit.exe /silent /modules=location,apps` | Despliegue selectivo | Solo los módulos indicados. |
+| `Toolkit.exe /report` | Auditoría | **No modifica nada.** Solo evalúa y reporta estado. Útil para medir cobertura antes y después. |
+| `Toolkit.exe /install-agent` | Bootstrap | Se copia a `C:\ProgramData\Toolkit\` y crea la tarea programada auto-actualizable (§12). |
+| `Toolkit.exe /uninstall-agent` | Reversión | Elimina el agente. Obligatorio tenerlo desde el día 1. |
+
+### Patrón de diseño: `Test` / `Set` (idempotencia)
+
+Cada acción implementa una interfaz común:
+
+```csharp
+public interface ITask
+{
+    string   Name        { get; }
+    TaskScope Scope      { get; }     // Machine | User | Both
+    bool     Test();                  // ¿ya está en el estado deseado?
+    TaskResult Set();                 // aplicar (solo si Test() == false)
+    TaskResult Rollback();            // revertir (obligatorio)
+}
+```
+
+Esto da gratis: ejecución repetible sin efectos secundarios, el modo `/report` (solo llama a `Test()`), y medición honesta de cobertura de la flota.
+
+---
+
+## 5. Estructura del proyecto
+
+```
+Toolkit/
+├── src/
+│   ├── Toolkit.App/                    # Punto de entrada, GUI, parseo CLI
+│   │   ├── Program.cs
+│   │   ├── MainForm.cs
+│   │   ├── app.manifest                # requireAdministrator + DPI aware
+│   │   └── Resources/
+│   │       ├── catalog.json            # catálogo de aplicaciones (embebido)
+│   │       └── secrets.dat             # claves cifradas (embebido)
+│   ├── Toolkit.Core/                   # Motor: ITask, Logger, Reporter, Registry helpers
+│   ├── Toolkit.Modules.Location/
+│   ├── Toolkit.Modules.Apps/
+│   ├── Toolkit.Modules.Network/
+│   └── Toolkit.Agent/                  # Modo auto-actualizable
+├── tests/
+│   └── Toolkit.Tests/                  # xUnit — Test()/Set() sobre registro simulado
+├── build/
+│   ├── build.ps1                       # compilar + ILMerge/Costura + firmar
+│   └── sign.ps1
+├── docs/
+│   ├── PLAN.md                         # este documento
+│   ├── RUNBOOK.md                      # guía operativa para el equipo de soporte
+│   └── APP-FICHAS/                     # una ficha por aplicación (§7)
+└── dist/
+    └── Toolkit.exe                     # artefacto firmado
+```
+
+**Empaquetado a un solo archivo:** `Costura.Fody` (embebe las DLL como recursos y las carga en memoria) o ILMerge. Resultado: un `.exe` sin DLL acompañantes.
+
+---
+
+## 6. MÓDULO A — Ubicación (servicio + políticas)
+
+Éste es el módulo con más trampas. Activar la ubicación en Windows **no es un solo interruptor**: son cuatro capas independientes, y si falta una, la aplicación que consume la ubicación falla sin decir por qué.
+
+### Las cuatro capas
+
+#### Capa 1 — El servicio
+
+| Elemento | Valor |
+|---|---|
+| Servicio | `lfsvc` (*Geolocation Service*) |
+| Por defecto | `Manual (Trigger Start)` |
+| Acción | `StartType = Automatic`, luego arrancar |
+| API .NET | `ServiceController` + `ChangeServiceConfig` vía P/Invoke (el `StartType` no se puede cambiar solo con `ServiceController` en .NET Framework) |
+
+Dependencia: `lfsvc` requiere el servicio `DeviceAssociationService` — verificarlo también.
+
+#### Capa 2 — El interruptor maestro del sistema
+
+```
+HKLM\SYSTEM\CurrentControlSet\Services\lfsvc\Service\Configuration
+    Status (REG_DWORD) = 1
+```
+
+Es lo que escribe *Configuración → Privacidad → Ubicación → Servicios de ubicación*.
+
+#### Capa 3 — El almacén de consentimiento (`ConsentStore`)
+
+```
+# Máquina — aplicaciones empaquetadas (UWP/Store)
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location
+    Value (REG_SZ) = "Allow"
+
+# Máquina — aplicaciones de escritorio clásicas (Win32)  ← LA QUE SE OLVIDA
+HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location\NonPackaged
+    Value (REG_SZ) = "Allow"
+
+# Usuario — se repite la misma estructura bajo HKCU
+HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\location
+    Value (REG_SZ) = "Allow"
+```
+
+> ⚠️ **El softphone y cualquier aplicación de escritorio necesitan la rama `NonPackaged`.** Es la causa número uno de "activé la ubicación y la app sigue sin verla".
+
+#### Capa 4 — Políticas (lo que impide que el usuario lo revierta)
+
+```
+HKLM\SOFTWARE\Policies\Microsoft\Windows\LocationAndSensors
+    DisableLocation               (REG_DWORD) = 0
+    DisableLocationScripting      (REG_DWORD) = 0
+    DisableWindowsLocationProvider(REG_DWORD) = 0
+
+HKLM\SOFTWARE\Policies\Microsoft\Windows\AppPrivacy
+    LetAppsAccessLocation         (REG_DWORD) = 1     # 1 = Forzar permitir
+```
+
+`LetAppsAccessLocation = 1` fuerza el permiso **y bloquea el conmutador en la interfaz** (aparecerá "Administrado por tu organización"). Eso es exactamente lo que se busca en las áreas donde los agentes son administradores locales.
+
+Para aplicaciones de escritorio concretas puede hacer falta:
+`LetAppsAccessLocation_ForceAllowTheseApps` (REG_MULTI_SZ, lista de identidades de app).
+
+### El problema difícil: `HKCU` cuando el exe corre como SYSTEM
+
+Cuando el toolkit corre desatendido como SYSTEM, `HKCU` apunta al perfil de SYSTEM, no al del agente. Estrategia en cuatro frentes (se aplican todos, por redundancia):
+
+| # | Técnica | Cubre |
+|---|---|---|
+| 1 | Política `LetAppsAccessLocation = 1` | Anula el consentimiento por usuario para apps empaquetadas. Es la defensa principal. |
+| 2 | Enumerar `HKEY_USERS\<SID>` y escribir en cada perfil cargado | Los usuarios con sesión activa en ese momento. |
+| 3 | `reg load` de `NTUSER.DAT` de perfiles no cargados, escribir, `reg unload` | Los usuarios que han iniciado sesión alguna vez pero no están activos. **Cuidado: nunca descargar una colmena que ya estaba cargada.** |
+| 4 | Escribir en el perfil `Default` (`C:\Users\Default\NTUSER.DAT`) | Usuarios futuros y equipos reimaginados. |
+
+Complemento opcional: tarea programada al inicio de sesión que ejecuta `Toolkit.exe /silent /modules=location-user` en el contexto del usuario. Barata y cierra cualquier hueco.
+
+### Verificación (no basta con escribir el registro)
+
+El módulo debe **probar que funciona**, no solo que las claves están puestas:
+
+1. `lfsvc` en estado `Running`.
+2. Consultar la API de geolocalización (`Windows.Devices.Geolocation` vía WinRT, accesible desde .NET Framework 4.8) y comprobar que `LocationStatus` no devuelve `Disabled` ni `NotAvailable`.
+3. Registrar la precisión obtenida. Sin GPS, Windows usa WiFi/IP → precisión de decenas o cientos de metros. **Si el caso de uso es E911, esto hay que validarlo con el proveedor de telefonía antes de desplegar a 400 equipos.**
+
+### Matriz de reversión
+
+Cada clave escrita se guarda con su valor previo en `C:\ProgramData\Toolkit\rollback.json` antes de modificarla. `Rollback()` la restaura. Sin esto, no hay forma de deshacer un despliegue fallido en 400 equipos.
+
+---
+
+## 7. MÓDULO B — Instalación de aplicaciones
+
+### Aplicaciones objetivo (a confirmar)
+
+| Aplicación | Qué es (asunción) | Estado |
+|---|---|---|
+| **GoTo** (GoTo Resolve / GoToAssist) | Soporte remoto desatendido | ⚠️ Confirmar producto exacto — hay 5 productos distintos bajo la marca GoTo |
+| **NetExtender** (SonicWall) | Cliente VPN SSL | ⚠️ Confirmar versión: 10.2.x usa instalador EXE, 10.3+ usa MSI. Los conmutadores cambian. |
+| **MaxAssist** | Asistencia remota | ⚠️ Producto no identificado con certeza — requiere ficha completa |
+| *(pendiente)* | Softphone / CRM / navegador | Completar lista |
+
+> **Nada de esto se codifica a ciegas.** Cada aplicación necesita su **ficha** validada en laboratorio antes de entrar al catálogo.
+
+### Plantilla de ficha de aplicación (`docs/APP-FICHAS/<app>.md`)
+
+```yaml
+nombre:            NetExtender
+version:           10.3.2
+tipo_instalador:   MSI | InnoSetup | NSIS | InstallShield | Custom
+origen:            https://... (URL oficial)  |  \\servidor\repo\...
+sha256:            <hash del instalador — obligatorio>
+comando_silencioso: msiexec /i "{pkg}" /qn /norestart /l*v "{log}"
+parametros:        # claves, servidor, perfil de conexión
+  SERVER:          vpn.empresa.com
+deteccion:         # cómo saber si YA está instalado
+  metodo:          registro_uninstall | version_archivo | servicio
+  clave:           HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{GUID}
+codigos_exito:     [0, 3010, 1641]
+requiere_reinicio: sí/no
+requiere_usuario:  no          # ¿necesita contexto de usuario interactivo?
+notas:             ...
+```
+
+### Motor de instalación — secuencia por aplicación
+
+```
+1. Detectar       → ¿ya instalado y en versión ≥ objetivo?  → SALTAR
+2. Obtener        → recurso compartido (primero) → URL oficial (respaldo)
+3. Verificar      → SHA-256 contra la ficha. Si no coincide: ABORTAR y alertar.
+4. Instalar       → ejecutar en silencio, con tiempo límite (10 min por defecto)
+5. Interpretar    → código de salida contra codigos_exito. 3010/1641 = reinicio pendiente
+6. Verificar      → repetir la detección. Si sigue sin detectarse: FALLO real.
+7. Configurar     → parámetros post-instalación (servidor VPN, clave de empresa)
+8. Registrar      → app, versión, resultado, duración
+```
+
+### Conmutadores silenciosos por tipo de instalador (referencia)
+
+| Tipo | Comando |
+|---|---|
+| MSI | `msiexec /i "pkg.msi" /qn /norestart /l*v "log.txt"` |
+| InnoSetup | `setup.exe /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LOG="log.txt"` |
+| NSIS | `setup.exe /S` |
+| InstallShield | `setup.exe /s /v"/qn /norestart"` |
+| Bootstrapper MSI | `setup.exe /quiet /norestart` |
+
+### Sobre `winget`
+
+**No se usa como mecanismo principal.** Motivos: bajo SYSTEM el ejecutable de `winget` no está en la ruta (vive en `WindowsApps`, por usuario), depende de *App Installer* actualizado, y las aplicaciones corporativas del catálogo (NetExtender, GoTo con clave, MaxAssist) sencillamente no están en el repositorio. Descarga directa + MSI da control total y reproducible.
+
+### Repositorio de instaladores
+
+Un recurso compartido SMB de solo lectura, p. ej. `\\SRV-FILE\Toolkit$\packages\`, con estructura `<app>\<version>\`. El exe intenta primero el share (rápido, sin saturar la salida a Internet con 400 descargas) y cae a la URL oficial si no hay share alcanzable.
+
+> Con 400 equipos, descargar un instalador de 80 MB desde Internet en todos a la vez satura el enlace del call center. **El share no es opcional.**
+
+---
+
+## 8. MÓDULO C — Diagnóstico de red
+
+En un call center la red no se mide con "¿hay Internet?". Se mide con las métricas que matan una llamada VoIP.
+
+### Qué mide
+
+| Categoría | Prueba | Umbral de alarma (VoIP) |
+|---|---|---|
+| **Conectividad** | Puerta de enlace, DNS, salida a Internet, portal cautivo | — |
+| **Latencia** | RTT a la centralita/SBC y al CRM | > 150 ms |
+| **Jitter** | Desviación entre 100 pings consecutivos | > 30 ms |
+| **Pérdida de paquetes** | % sobre 100 paquetes | > 1% |
+| **DNS** | Tiempo de resolución, servidores configurados, resolución de dominios corporativos | > 100 ms |
+| **MTU** | Descubrimiento con paquetes DF | < 1500 (túnel/VPN mal configurada) |
+| **Interfaz** | Cable vs WiFi, velocidad de enlace, señal RSSI si es WiFi | WiFi = bandera amarilla en puesto de agente |
+| **Proxy** | Configuración WinHTTP y WinINET | Descuadre entre ambas = fallos intermitentes |
+| **TLS** | Handshake a los destinos corporativos | Inspección SSL rompiendo certificados |
+| **Puertos** | SIP (5060/5061), RTP (rango), VPN | Cerrados por firewall local o de red |
+
+### Implementación
+
+- `System.Net.NetworkInformation.Ping` para RTT/jitter/pérdida (nativo, sin lanzar `ping.exe`).
+- `Dns.GetHostEntry` con cronómetro para DNS.
+- `NetworkInterface` para velocidad y tipo de enlace.
+- WMI (`MSFT_NetAdapter`, `MSNdis_80211_*`) para señal WiFi.
+- `TcpClient.ConnectAsync` con tiempo límite para puertos.
+
+### Salida
+
+Dos formatos a la vez:
+- **Humano:** tabla en consola/GUI con semáforo verde/ámbar/rojo.
+- **Máquina:** `network-<equipo>-<fecha>.json` depositado en el share. Con 400 equipos reportando, esto se convierte en el mapa de calor de la red del call center — probablemente el subproducto más valioso de todo el proyecto.
+
+---
+
+## 9. Motor transversal
+
+### Registro de actividad (logging)
+
+| Destino | Formato | Retención |
+|---|---|---|
+| `C:\ProgramData\Toolkit\logs\toolkit-<fecha>.log` | Texto con marca de tiempo | 30 días, rotación |
+| `\\SRV-FILE\Toolkit$\reports\<equipo>.json` | JSON estructurado | Permanente |
+| Registro de eventos de Windows, origen `Toolkit` | Eventos con ID | Según política del equipo |
+
+Campos obligatorios en cada reporte: nombre del equipo, número de serie, usuario, versión de SO y build, versión del toolkit, marca de tiempo, y por cada tarea: `{nombre, estado_previo, accion, resultado, duracion_ms, error}`.
+
+### Códigos de salida
+
+| Código | Significado |
+|---|---|
+| `0` | Todo correcto |
+| `3010` | Correcto, requiere reinicio |
+| `1` | Fallo general |
+| `5` | Permisos insuficientes (no elevado) |
+| `1001` | Módulo de ubicación falló |
+| `1002` | Una o más aplicaciones fallaron |
+| `1003` | Diagnóstico de red con estado crítico |
+| `1010` | Share inalcanzable |
+
+Son consumibles por cualquier RMM o tarea programada — imprescindible para medir cobertura sin entrar equipo por equipo.
+
+### Seguridad de la ejecución
+
+- Manifiesto con `requireAdministrator`.
+- Si no está elevado y hay sesión interactiva: reelevar vía UAC. Si es desatendido: salir con código 5 y registrarlo.
+- Tiempo límite global (30 min) con auto-terminación — nunca dejar un proceso colgado en 400 equipos.
+- Un único mutex global: nunca dos instancias simultáneas.
+- **Ventana de mantenimiento:** en modo desatendido, comprobar si el equipo está en horario productivo. Si el módulo a ejecutar es intrusivo (instalación, reinicio), aplazar. Configurable.
+
+---
+
+## 10. Firma de código y antivirus — crítico a esta escala
+
+Con 400 equipos, un binario sin firmar **no es viable**: SmartScreen lo bloquea, el antivirus lo pone en cuarentena, y acabarás creando 400 excepciones a mano.
+
+| Acción | Detalle | Coste aprox. |
+|---|---|---|
+| **Certificado de firma de código OV o EV** | EV da reputación inmediata en SmartScreen; OV necesita acumular reputación. Desde junio 2023 ambos requieren almacenamiento en HSM/token. | 250–600 USD/año |
+| **Firmar en cada compilación** | `signtool sign /fd SHA256 /tr <servidor-de-sellado> /td SHA256` | — |
+| **Lista blanca en el antivirus corporativo** | Por **editor/certificado**, no por hash — así no hay que repetirlo en cada versión | — |
+| **Envío preventivo a Microsoft Defender** | *Submit a file for analysis* antes del despliegue masivo | Gratis |
+
+> Alternativa si no hay presupuesto: certificado autofirmado + desplegar el certificado raíz al almacén *Editores de confianza* de la flota. **Pero esto hay que hacerlo antes del primer despliegue del exe**, lo que crea un problema del huevo y la gallina sin infraestructura de gestión. Recomendación: comprar el certificado. Es el gasto con mejor relación coste/dolor evitado de todo el proyecto.
+
+---
+
+## 11. Gestión de secretos
+
+Las claves de empresa de GoTo, credenciales de VPN o tokens de agente **no pueden ir en texto plano dentro del binario** (un `strings Toolkit.exe` las expone).
+
+| Nivel | Enfoque |
+|---|---|
+| **Mínimo aceptable** | Recurso embebido cifrado con AES-256; la clave derivada por PBKDF2 de un valor compilado + identificador de máquina. Ofusca frente a un vistazo casual. |
+| **Recomendado** | Los secretos **no viajan en el exe**. Se leen del share con ACL restringida (`\\SRV-FILE\Toolkit$\config\`), legible solo por *Equipos del dominio* o por una cuenta de servicio. El exe sin acceso al share simplemente omite las apps que requieren clave. |
+| **Nunca** | Codificar en el fuente, en Base64, o en un `.config` junto al exe. |
+
+Se asume que cualquier secreto en un binario distribuido a 400 equipos **es recuperable** por alguien con motivación. Diseñar en consecuencia: usar claves con el mínimo privilegio necesario y rotables.
+
+---
+
+## 12. Despliegue — la parte difícil
+
+Sin GPO, sin Intune y sin RMM, hay que resolver el problema de arranque: *¿cómo llega el exe a 400 equipos la primera vez?*
+
+### Estrategia en dos tiempos
+
+#### Tiempo 1 — Agente puente (lo que construimos nosotros)
+
+En su primera ejecución, `Toolkit.exe /install-agent`:
+
+1. Se copia a `C:\ProgramData\Toolkit\Toolkit.exe` (carpeta con ACL: solo SYSTEM/Administradores escriben).
+2. Crea una tarea programada `Toolkit Agent`:
+   - Ejecuta como `SYSTEM`, con privilegios máximos.
+   - Disparadores: al arrancar (+5 min de retraso) y cada 4 horas.
+   - Acción: `Toolkit.exe /agent-check`.
+3. En cada ejecución, `/agent-check`:
+   - Lee `\\SRV-FILE\Toolkit$\manifest.json` → versión objetivo y trabajos pendientes.
+   - Si hay versión nueva: se auto-actualiza (descarga, **verifica firma y hash**, se reemplaza).
+   - Ejecuta los trabajos que le correspondan según su anillo de despliegue.
+   - Sube su reporte de estado.
+
+**Esto es un mini-RMM de unas 400 líneas.** A partir de la primera instalación, cualquier cambio futuro (nueva app, nueva política, nuevo diagnóstico) se despliega editando un JSON en un recurso compartido. Ése es el verdadero retorno del proyecto.
+
+#### Cómo llega el exe la PRIMERA vez (por orden de preferencia)
+
+| Vía | Condición | Cobertura esperada |
+|---|---|---|
+| **GPO** (script de inicio o tarea programada) | Requiere dominio AD | 100% — *verificar si existe dominio; cambiaría todo el plan* |
+| **PsExec / PowerShell Remoting en masa** | Admin local común o LAPS + SMB/WinRM alcanzables | 60–80% |
+| **Carpeta de Inicio / RunOnce** vía acceso administrativo remoto (`\\PC\C$`) | Admin local + SMB | 60–80% |
+| **Pasada manual del equipo de soporte** | Siempre funciona | El resto |
+| **Imagen base** (equipos nuevos/reimagen) | Incluir el exe en la imagen dorada y ejecutar `/install-agent` en el primer arranque | 100% de los equipos nuevos |
+
+Realista: entre 2 y 4 técnicos pueden cubrir manualmente el remanente de ~100 equipos en 2–3 días (≈3 min por PC).
+
+#### Tiempo 2 — Infraestructura real (recomendación estratégica)
+
+Construir y mantener un mini-RMM para 400 equipos tiene un coste continuo. **Se recomienda que este proyecto sea el detonante para adoptar una herramienta de gestión real**, y que el toolkit pase a ser solo la carga útil:
+
+| Opción | Coste | Comentario |
+|---|---|---|
+| **Unir al dominio + GPO** | Coste del servidor | Si ya hay AD, es lo más barato y potente. |
+| **Microsoft Intune** | ~2–8 USD/equipo/mes | El mejor destino a largo plazo. El exe se empaqueta como `.intunewin` con script de detección. |
+| **Action1** | Gratis hasta 200 equipos | Con 400 hacen falta dos instancias o plan de pago. Muy bueno para esta escala. |
+| **PDQ Deploy + Inventory** | ~1.500 USD/año | Pensado exactamente para este escenario. Despliega el exe por consola. |
+
+El toolkit está diseñado para funcionar igual bajo cualquiera de ellas: un exe, conmutadores de línea de comandos, códigos de salida estándar. **Ninguna de estas migraciones exigiría reescribirlo.**
+
+### Anillos de despliegue
+
+| Anillo | Equipos | Quién | Criterio para avanzar |
+|---|---|---|---|
+| **0 — Laboratorio** | 3–5 | IT | Todos los módulos verifican correctamente en cada build de Windows presente en la flota |
+| **1 — Piloto** | 15–20 | Un área, voluntarios | 72 h sin incidencias, 0 tickets |
+| **2 — Ampliación** | ~100 | Un turno completo | 1 semana, tasa de éxito > 95% |
+| **3 — General** | Resto | Toda la flota | — |
+
+Regla: entre anillos siempre hay una reunión de revisión. Nunca se salta un anillo, por urgente que parezca.
+
+---
+
+## 13. Cronograma
+
+| Semana | Trabajo | Entregable |
+|---|---|---|
+| **1** | Descubrimiento: confirmar dominio/workgroup, inventario de builds, fichas de aplicación validadas en laboratorio, definir por qué se necesita la ubicación | Inventario + 3 fichas completas |
+| **2** | Esqueleto: solución C#, motor `ITask`, logger, CLI/GUI, manifiesto, compilación a archivo único | `Toolkit.exe` que no hace nada pero corre |
+| **3** | Módulo Ubicación completo, incluida la estrategia HKCU y la verificación por API | Módulo A + pruebas |
+| **4** | Módulo Apps + catálogo + repositorio en el share | Módulo B |
+| **5** | Módulo Red + reportes JSON + panel de resultados | Módulo C |
+| **6** | Agente puente, auto-actualización, certificado de firma, lista blanca en AV | Binario firmado + canal de despliegue |
+| **7** | Anillos 0 y 1 | Piloto en producción |
+| **8+** | Anillos 2 y 3, `RUNBOOK.md`, formación al equipo de soporte | Flota cubierta |
+
+Sin adelantar la compra del certificado a la semana 1–2, la semana 6 se convierte en cuello de botella. **Es la dependencia externa más larga del proyecto.**
+
+---
+
+## 14. Riesgos
+
+| Riesgo | Impacto | Mitigación |
+|---|---|---|
+| El antivirus pone el exe en cuarentena en masa | Bloqueante | Firma EV + lista blanca por editor + envío previo a Defender |
+| Las claves de ubicación se comportan distinto entre builds de Windows | Alto | Matriz de pruebas por build en el anillo 0. Nunca asumir paridad 10/11. |
+| La precisión de la ubicación no sirve para el caso de uso (E911) | Alto — invalida el módulo | **Validar con el proveedor de telefonía en la semana 1**, antes de escribir código |
+| Conmutadores silenciosos de instalador incorrectos → instalaciones a medias | Medio | Ficha validada en laboratorio + verificación post-instalación obligatoria |
+| 400 descargas simultáneas saturan el enlace | Medio | Repositorio en share + ejecución escalonada por anillo y horario |
+| Agentes con admin local revierten la configuración | Medio | Políticas que bloquean la interfaz + reaplicación cada 4 h por el agente |
+| El agente se auto-actualiza a una versión defectuosa en 400 equipos | **Crítico** | Despliegue por anillos también para el propio agente + verificación de firma + capacidad de reversión + versión mínima de rescate en el manifiesto |
+| Pérdida del recurso compartido | Medio | El exe funciona de forma autónoma con el catálogo embebido; el share es optimización, no dependencia dura |
+
+### Cumplimiento y aspecto laboral
+
+Activar la geolocalización en los equipos de 400 empleados tiene implicaciones legales (RGPD/LOPD o la normativa local equivalente) independientemente de la motivación técnica.
+
+- Documentar la **finalidad concreta** (p. ej. llamadas de emergencia del softphone) y ceñirse a ella.
+- Informar a la plantilla y, si aplica, al comité de empresa **antes** del despliegue.
+- Consultarlo con Legal/RRHH en la semana 1. Es más barato que pararlo en la semana 7.
+- Si la finalidad es E911, dejarlo por escrito: acota el alcance y evita que se interprete como vigilancia.
+
+---
+
+## 15. Criterios de aceptación
+
+El proyecto se considera terminado cuando:
+
+- [ ] `Toolkit.exe` es un archivo único, firmado, y corre en Windows 10 22H2 y Windows 11 (todos los builds de la flota) sin instalar nada previo.
+- [ ] `Toolkit.exe /report` devuelve el estado real sin modificar el sistema.
+- [ ] Ejecutarlo dos veces seguidas produce el mismo resultado y ningún cambio la segunda vez (idempotencia demostrada).
+- [ ] El módulo de ubicación verifica mediante **API**, no solo por registro, y funciona con el usuario estándar tras cerrar y abrir sesión.
+- [ ] `Rollback()` restaura el estado previo en un equipo de prueba, verificado.
+- [ ] ≥ 95% de los 400 equipos reportan estado correcto en el panel.
+- [ ] El equipo de soporte despliega una aplicación nueva editando únicamente `manifest.json`, sin recompilar.
+- [ ] `RUNBOOK.md` permite a un técnico de nivel 1 resolver los fallos habituales sin escalar.
+
+---
+
+## 16. Anexo — Primeros pasos concretos
+
+1. **Responder las 5 preguntas abiertas de §1** (especialmente: ¿hay dominio AD?).
+2. **Iniciar la compra del certificado de firma de código** — es la dependencia más lenta.
+3. **Montar el laboratorio**: una máquina virtual por cada build de Windows presente en la flota.
+4. **Validar el caso de uso de la ubicación** con el proveedor de telefonía.
+5. **Rellenar las fichas** de GoTo, NetExtender y MaxAssist con instaladores reales y conmutadores probados a mano.
+
+Sólo después de esos cinco puntos merece la pena escribir la primera línea de C#.

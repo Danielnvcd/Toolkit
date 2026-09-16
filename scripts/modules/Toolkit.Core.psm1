@@ -1,0 +1,459 @@
+<#
+    Toolkit.Core.psm1
+    Motor comun: logging, registro con rollback, resultados, reportes.
+    Compatible con Windows PowerShell 5.1 (no requiere PowerShell 7).
+#>
+
+$script:Version      = '0.1.0'
+$script:Root         = 'C:\ProgramData\Toolkit'
+$script:LogPath      = $null
+$script:RollbackPath = $null
+$script:SharePath    = $null
+$script:Silent       = $false
+$script:ReportOnly   = $false
+$script:Results      = New-Object System.Collections.ArrayList
+
+#region ---------- Inicializacion ----------
+
+function Initialize-Toolkit {
+    [CmdletBinding()]
+    param(
+        [string]$Root = 'C:\ProgramData\Toolkit',
+        [string]$SharePath,
+        [switch]$Silent,
+        [switch]$ReportOnly
+    )
+
+    $script:Root       = $Root
+    $script:Silent     = $Silent.IsPresent
+    $script:ReportOnly = $ReportOnly.IsPresent
+    $script:SharePath  = $SharePath
+    $script:Results    = New-Object System.Collections.ArrayList
+
+    foreach ($dir in @($Root, (Join-Path $Root 'logs'), (Join-Path $Root 'reports'), (Join-Path $Root 'temp'))) {
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -Path $dir -ItemType Directory -Force | Out-Null
+        }
+    }
+
+    $stamp               = Get-Date -Format 'yyyyMMdd-HHmmss'
+    $script:LogPath      = Join-Path $Root ('logs\toolkit-{0}-{1}.log' -f $env:COMPUTERNAME, $stamp)
+    $script:RollbackPath = Join-Path $Root 'rollback.json'
+
+    Write-Log ('=' * 78) -Level INFO
+    Write-Log ("Toolkit v{0}  |  {1}  |  modo: {2}" -f $script:Version, $env:COMPUTERNAME,
+               $(if ($script:ReportOnly) { 'SOLO REPORTE (sin cambios)' } elseif ($script:Silent) { 'DESATENDIDO' } else { 'INTERACTIVO' })) -Level INFO
+    Write-Log ("Ejecutado por: {0}  |  Elevado: {1}" -f "$env:USERDOMAIN\$env:USERNAME", (Test-IsAdmin)) -Level INFO
+    Write-Log ('=' * 78) -Level INFO
+
+    Remove-OldLogs -Days 30
+}
+
+function Remove-OldLogs {
+    param([int]$Days = 30)
+    try {
+        $logDir = Join-Path $script:Root 'logs'
+        if (-not (Test-Path -LiteralPath $logDir)) { return }
+        $limit = (Get-Date).AddDays(-$Days)
+        Get-ChildItem -LiteralPath $logDir -Filter '*.log' -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -lt $limit } |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch { }
+}
+
+#endregion
+
+#region ---------- Logging ----------
+
+function Write-Log {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory, Position = 0)][AllowEmptyString()][string]$Message,
+        [ValidateSet('INFO', 'OK', 'WARN', 'ERROR', 'DEBUG', 'STEP')][string]$Level = 'INFO',
+        [switch]$NoConsole
+    )
+
+    $line = '{0} [{1,-5}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
+
+    if ($script:LogPath) {
+        try { Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
+    }
+
+    if (-not $NoConsole -and -not $script:Silent) {
+        $color = switch ($Level) {
+            'OK'    { 'Green' }
+            'WARN'  { 'Yellow' }
+            'ERROR' { 'Red' }
+            'DEBUG' { 'DarkGray' }
+            'STEP'  { 'Cyan' }
+            default { 'Gray' }
+        }
+        Write-Host $line -ForegroundColor $color
+    }
+}
+
+function Write-Step {
+    param([Parameter(Mandatory)][string]$Message)
+    Write-Log '' -Level INFO -NoConsole
+    Write-Log ('--- {0} ' -f $Message).PadRight(78, '-') -Level STEP
+}
+
+#endregion
+
+#region ---------- Privilegios ----------
+
+function Test-IsAdmin {
+    try {
+        $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $pr = New-Object Security.Principal.WindowsPrincipal($id)
+        return $pr.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    } catch { return $false }
+}
+
+function Test-IsSystem {
+    try {
+        return ([Security.Principal.WindowsIdentity]::GetCurrent()).User.Value -eq 'S-1-5-18'
+    } catch { return $false }
+}
+
+#endregion
+
+#region ---------- Registro con rollback ----------
+
+function Get-RegValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name
+    )
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $null }
+        $item = Get-ItemProperty -LiteralPath $Path -Name $Name -ErrorAction Stop
+        return $item.$Name
+    } catch {
+        return $null
+    }
+}
+
+function Save-RegBackup {
+    param(
+        [string]$Path,
+        [string]$Name,
+        $Current,
+        [string]$Type
+    )
+    try {
+        $entries = @()
+        if (Test-Path -LiteralPath $script:RollbackPath) {
+            $raw = Get-Content -LiteralPath $script:RollbackPath -Raw -ErrorAction SilentlyContinue
+            if ($raw) { $entries = @(ConvertFrom-Json $raw) }
+        }
+
+        # Solo se guarda el PRIMER valor original. Nunca se pisa con un intermedio.
+        foreach ($e in $entries) {
+            if ($e.Path -eq $Path -and $e.Name -eq $Name) { return }
+        }
+
+        $entries += [pscustomobject]@{
+            Path      = $Path
+            Name      = $Name
+            HadValue  = ($null -ne $Current)
+            Value     = $Current
+            Type      = $Type
+            Timestamp = (Get-Date).ToString('o')
+        }
+        $entries | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $script:RollbackPath -Encoding UTF8
+    } catch {
+        Write-Log "No se pudo guardar el respaldo de $Path\$Name : $($_.Exception.Message)" -Level WARN
+    }
+}
+
+function Set-RegValue {
+    <#
+        Escribe un valor de registro de forma idempotente.
+        Devuelve $true si REALMENTE cambio algo, $false si ya estaba correcto.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][AllowEmptyString()]$Value,
+        [ValidateSet('String', 'DWord', 'QWord', 'MultiString', 'ExpandString', 'Binary')]
+        [string]$Type = 'DWord'
+    )
+
+    $current = Get-RegValue -Path $Path -Name $Name
+
+    if ($null -ne $current) {
+        $same = if ($Type -eq 'MultiString') {
+            ((@($current) -join "`0") -eq (@($Value) -join "`0"))
+        } else {
+            ("$current" -eq "$Value")
+        }
+        if ($same) {
+            Write-Log ("  = {0}\{1} ya vale '{2}'" -f $Path, $Name, $Value) -Level DEBUG
+            return $false
+        }
+    }
+
+    if ($script:ReportOnly) {
+        Write-Log ("  ! {0}\{1} deberia ser '{2}' (actual: {3}) -- MODO REPORTE, sin cambios" -f `
+                   $Path, $Name, $Value, $(if ($null -eq $current) { '<ausente>' } else { $current })) -Level WARN
+        return $true
+    }
+
+    try {
+        Save-RegBackup -Path $Path -Name $Name -Current $current -Type $Type
+        if (-not (Test-Path -LiteralPath $Path)) {
+            New-Item -Path $Path -Force -ErrorAction Stop | Out-Null
+        }
+        New-ItemProperty -LiteralPath $Path -Name $Name -Value $Value -PropertyType $Type -Force -ErrorAction Stop | Out-Null
+        Write-Log ("  + {0}\{1} = {2}   (antes: {3})" -f `
+                   $Path, $Name, $Value, $(if ($null -eq $current) { '<ausente>' } else { $current })) -Level OK
+        return $true
+    } catch {
+        Write-Log ("  x FALLO al escribir {0}\{1} : {2}" -f $Path, $Name, $_.Exception.Message) -Level ERROR
+        throw
+    }
+}
+
+function Invoke-ToolkitRollback {
+    <# Revierte todos los cambios de registro registrados en rollback.json #>
+    [CmdletBinding()]
+    param()
+
+    if (-not (Test-Path -LiteralPath $script:RollbackPath)) {
+        Write-Log 'No hay nada que revertir (rollback.json no existe).' -Level WARN
+        return
+    }
+
+    $entries = @(ConvertFrom-Json (Get-Content -LiteralPath $script:RollbackPath -Raw))
+    Write-Step ("Revirtiendo {0} cambio(s) de registro" -f $entries.Count)
+
+    # Orden inverso: se deshace lo ultimo primero.
+    [array]::Reverse($entries)
+
+    foreach ($e in $entries) {
+        try {
+            if ($e.HadValue) {
+                if (-not (Test-Path -LiteralPath $e.Path)) { New-Item -Path $e.Path -Force | Out-Null }
+                New-ItemProperty -LiteralPath $e.Path -Name $e.Name -Value $e.Value -PropertyType $e.Type -Force | Out-Null
+                Write-Log ("  < restaurado {0}\{1} = {2}" -f $e.Path, $e.Name, $e.Value) -Level OK
+            } else {
+                if (Test-Path -LiteralPath $e.Path) {
+                    Remove-ItemProperty -LiteralPath $e.Path -Name $e.Name -Force -ErrorAction SilentlyContinue
+                    Write-Log ("  < eliminado  {0}\{1} (no existia antes)" -f $e.Path, $e.Name) -Level OK
+                }
+            }
+        } catch {
+            Write-Log ("  x no se pudo revertir {0}\{1} : {2}" -f $e.Path, $e.Name, $_.Exception.Message) -Level ERROR
+        }
+    }
+
+    Rename-Item -LiteralPath $script:RollbackPath -NewName ("rollback-aplicado-{0}.json" -f (Get-Date -Format 'yyyyMMdd-HHmmss')) -Force
+    Write-Log 'Reversion completada.' -Level OK
+}
+
+#endregion
+
+#region ---------- Resultados y reportes ----------
+
+function Add-Result {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Module,
+        [Parameter(Mandatory)][string]$Task,
+        [Parameter(Mandatory)][ValidateSet('OK', 'CAMBIADO', 'YA-OK', 'FALLO', 'OMITIDO', 'AVISO')][string]$Status,
+        [string]$Message = '',
+        $Detail = $null
+    )
+    $null = $script:Results.Add([pscustomobject]@{
+        Module    = $Module
+        Task      = $Task
+        Status    = $Status
+        Message   = $Message
+        Detail    = $Detail
+        Timestamp = (Get-Date).ToString('o')
+    })
+}
+
+function Get-Results { return $script:Results }
+
+function Get-MachineInfo {
+    [CmdletBinding()]
+    param()
+    $info = [ordered]@{
+        ComputerName   = $env:COMPUTERNAME
+        ToolkitVersion = $script:Version
+        Timestamp      = (Get-Date).ToString('o')
+        Serial         = $null
+        Manufacturer   = $null
+        Model          = $null
+        OSCaption      = $null
+        OSVersion      = $null
+        DisplayVersion = $null
+        UBR            = $null
+        LoggedOnUser   = $null
+        Domain         = $null
+        PartOfDomain   = $null
+        IPv4           = @()
+    }
+    try {
+        $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+        $info.OSCaption = $os.Caption
+        $info.OSVersion = $os.Version
+    } catch { }
+    try {
+        $cs = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+        $info.Manufacturer = $cs.Manufacturer
+        $info.Model        = $cs.Model
+        $info.LoggedOnUser = $cs.UserName
+        $info.Domain       = $cs.Domain
+        $info.PartOfDomain = $cs.PartOfDomain
+    } catch { }
+    try { $info.Serial = (Get-CimInstance Win32_BIOS -ErrorAction Stop).SerialNumber } catch { }
+    try {
+        $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+        if ($cv.PSObject.Properties.Name -contains 'DisplayVersion') { $info.DisplayVersion = $cv.DisplayVersion }
+        if ($cv.PSObject.Properties.Name -contains 'UBR')            { $info.UBR = $cv.UBR }
+    } catch { }
+    try {
+        $info.IPv4 = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+            Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } |
+            Select-Object -ExpandProperty IPAddress)
+    } catch { }
+    return [pscustomobject]$info
+}
+
+function Save-Report {
+    <# Guarda el reporte en JSON localmente y, si hay share alcanzable, tambien alli. #>
+    [CmdletBinding()]
+    param([string]$SharePath = $script:SharePath)
+
+    $report = [pscustomobject]@{
+        Machine = Get-MachineInfo
+        Mode    = $(if ($script:ReportOnly) { 'report' } elseif ($script:Silent) { 'silent' } else { 'interactive' })
+        Results = @($script:Results)
+        Summary = Get-ResultSummary
+    }
+
+    $json  = $report | ConvertTo-Json -Depth 8
+    $local = Join-Path $script:Root ('reports\{0}.json' -f $env:COMPUTERNAME)
+    try {
+        $json | Set-Content -LiteralPath $local -Encoding UTF8
+        Write-Log "Reporte local: $local" -Level INFO
+    } catch {
+        Write-Log "No se pudo escribir el reporte local: $($_.Exception.Message)" -Level WARN
+    }
+
+    if ($SharePath) {
+        try {
+            $dir = Join-Path $SharePath 'reports'
+            if (-not (Test-Path -LiteralPath $dir)) { New-Item -Path $dir -ItemType Directory -Force -ErrorAction Stop | Out-Null }
+            $json | Set-Content -LiteralPath (Join-Path $dir ('{0}.json' -f $env:COMPUTERNAME)) -Encoding UTF8 -ErrorAction Stop
+            Write-Log "Reporte subido al share: $dir" -Level OK
+        } catch {
+            Write-Log "Share inalcanzable, reporte solo en local: $($_.Exception.Message)" -Level WARN
+        }
+    }
+
+    return $report
+}
+
+function Get-ResultSummary {
+    $s = [ordered]@{}
+    foreach ($k in @('OK', 'CAMBIADO', 'YA-OK', 'FALLO', 'OMITIDO', 'AVISO')) {
+        $s[$k] = @($script:Results | Where-Object { $_.Status -eq $k }).Count
+    }
+    return [pscustomobject]$s
+}
+
+function Show-Summary {
+    [CmdletBinding()]
+    param()
+
+    Write-Host ''
+    Write-Host ('=' * 78) -ForegroundColor Cyan
+    Write-Host ' RESUMEN' -ForegroundColor Cyan
+    Write-Host ('=' * 78) -ForegroundColor Cyan
+
+    foreach ($r in $script:Results) {
+        $color = switch ($r.Status) {
+            'OK'       { 'Green' }
+            'CAMBIADO' { 'Green' }
+            'YA-OK'    { 'DarkGray' }
+            'FALLO'    { 'Red' }
+            'AVISO'    { 'Yellow' }
+            default    { 'Gray' }
+        }
+        Write-Host ('  [{0,-8}] {1,-14} {2}' -f $r.Status, $r.Module, $r.Task) -ForegroundColor $color -NoNewline
+        if ($r.Message) { Write-Host ("  -> {0}" -f $r.Message) -ForegroundColor DarkGray } else { Write-Host '' }
+    }
+
+    $sum = Get-ResultSummary
+    Write-Host ''
+    Write-Host ("  Cambiado: {0}   Ya correcto: {1}   Fallos: {2}   Avisos: {3}   Omitido: {4}" -f `
+                $sum.CAMBIADO, $sum.'YA-OK', $sum.FALLO, $sum.AVISO, $sum.OMITIDO) -ForegroundColor White
+    Write-Host ("  Log: {0}" -f $script:LogPath) -ForegroundColor DarkGray
+    Write-Host ('=' * 78) -ForegroundColor Cyan
+}
+
+function Get-ExitCode {
+    <# Codigos de salida segun el plan (seccion 9). #>
+    $sum = Get-ResultSummary
+    if ($sum.FALLO -eq 0) { return 0 }
+
+    $failedModules = @($script:Results | Where-Object { $_.Status -eq 'FALLO' } | Select-Object -ExpandProperty Module -Unique)
+    if ($failedModules -contains 'Location') { return 1001 }
+    if ($failedModules -contains 'Apps')     { return 1002 }
+    if ($failedModules -contains 'Network')  { return 1003 }
+    return 1
+}
+
+#endregion
+
+#region ---------- Utilidades ----------
+
+function Test-MaintenanceWindow {
+    <#
+        Devuelve $true si AHORA es momento seguro para acciones intrusivas.
+        Por defecto: fuera de 07:00-23:00 (call center con turnos largos).
+        Ajustar a los turnos reales antes de desplegar.
+    #>
+    param(
+        [int]$StartHour = 23,
+        [int]$EndHour   = 7
+    )
+    $h = (Get-Date).Hour
+    if ($StartHour -gt $EndHour) { return ($h -ge $StartHour -or $h -lt $EndHour) }
+    return ($h -ge $StartHour -and $h -lt $EndHour)
+}
+
+function Get-ToolkitConfig {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+        throw "No se encuentra el archivo de configuracion: $Path"
+    }
+    try {
+        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    } catch {
+        throw "El archivo de configuracion no es JSON valido ($Path): $($_.Exception.Message)"
+    }
+}
+
+function Get-ToolkitVersion { return $script:Version }
+function Get-ToolkitLogPath { return $script:LogPath }
+function Test-ReportOnly    { return $script:ReportOnly }
+
+#endregion
+
+Export-ModuleMember -Function @(
+    'Initialize-Toolkit', 'Write-Log', 'Write-Step',
+    'Test-IsAdmin', 'Test-IsSystem',
+    'Get-RegValue', 'Set-RegValue', 'Invoke-ToolkitRollback',
+    'Add-Result', 'Get-Results', 'Get-MachineInfo', 'Save-Report',
+    'Get-ResultSummary', 'Show-Summary', 'Get-ExitCode',
+    'Test-MaintenanceWindow', 'Get-ToolkitConfig',
+    'Get-ToolkitVersion', 'Get-ToolkitLogPath', 'Test-ReportOnly'
+)
