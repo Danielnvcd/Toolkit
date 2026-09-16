@@ -241,3 +241,9 @@ Compila y arranca en Windows 10/11 con el SDK de .NET 8 (`build\build.ps1`). Lo 
 ## Autor
 
 **Toolkit BPO** — creado por **danielnvcd**. La identidad de la app (creador, copyright, descripción) vive en `src\Toolkit.App\Toolkit.App.csproj` y de ahí sale lo que muestran el Explorador (Propiedades → Detalles del exe), el diálogo *Acerca de* de la app (clic en el logo o en "Acerca de") y `Toolkit.exe /?`.
+
+---
+
+## Licencia
+
+[MIT](LICENSE) — libre de usar, copiar, modificar y distribuir, también con fines comerciales, manteniendo el aviso de copyright. Sin garantía.

@@ -13,7 +13,8 @@
     <!-- Identidad de la app: Propiedades > Detalles del exe, dialogo Acerca de y ayuda de consola. -->
     <Authors>danielnvcd</Authors>
     <Company>danielnvcd</Company>
-    <Copyright>Copyright (c) 2026 danielnvcd</Copyright>
+    <Copyright>Copyright (c) 2026 danielnvcd. Licencia MIT.</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <Description>Toolkit BPO - utilidades de soporte tecnico para call center: ubicacion, aplicaciones, red, usuarios y reparaciones rapidas.</Description>
     <Product>Toolkit BPO</Product>
     <AssemblyTitle>Toolkit BPO</AssemblyTitle>
