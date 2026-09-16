@@ -171,10 +171,21 @@ Solo hace falta si cambias algo. Requiere Windows con el SDK de .NET.
 ```powershell
 cd build
 .\build.ps1                                  # valida scripts -> compila -> comprueba que es un solo archivo
-.\build.ps1 -Sign -Thumbprint <huella>       # además lo firma (recomendado antes de distribuirlo)
+.\build.ps1 -Sign                            # además lo firma con el certificado de danielnvcd (recomendado)
+.\build.ps1 -Sign -Thumbprint <huella>       # o con otro certificado del almacén (p. ej. uno de CA pública)
 ```
 
 Deja el resultado en `dist\Toolkit.exe` junto con su SHA-256.
+
+### Firma y "Editor"
+
+Lo que Windows muestra como **Editor** en el aviso de UAC (y en SmartScreen) no sale de las propiedades del exe: sale de la firma digital Authenticode. Sin firma siempre dice "Editor: desconocido".
+
+El repo lleva un certificado de firma de código **autofirmado** a nombre de `danielnvcd` (`scripts\tools\New-SigningCert.ps1` lo crea; la parte pública está en `build\cert\danielnvcd-codesign.cer`, la clave privada se queda en el equipo que compila). `build.ps1 -Sign` firma el exe con él, con sello de tiempo de DigiCert. No hace falta el Windows SDK: si no hay `signtool`, firma PowerShell.
+
+Como es autofirmado, en cada equipo destino hay que instalarlo una vez como de confianza — `scripts\tools\Install-SigningCert.ps1` como administrador (o por GPO en toda la flota). Hecho eso, UAC muestra **"Editor comprobado: danielnvcd"** y el antivirus puede poner el certificado en lista blanca en vez de cada hash.
+
+Lo que un certificado autofirmado **no** quita es el aviso de SmartScreen ("Windows protegió tu PC") la primera vez que se ejecuta un binario nuevo: eso solo lo resuelve un certificado emitido por una CA pública (DigiCert, Sectigo, GlobalSign…), que se compra. Si se compra, se importa al almacén y se compila con `-Sign -Thumbprint <huella>`; nada más cambia.
 
 El logo vive en `assets\logo.svg`. Si lo cambias, regenera el icono del exe y de las ventanas con `scripts\tools\New-Logo.ps1` (renderiza el SVG con el Edge que trae Windows y produce `assets\logo.ico` y `assets\logo.png`); el `.ico` se versiona porque es lo que compila.
 

@@ -92,7 +92,9 @@ Write-Host ("  + Toolkit.exe  ({0} MB)" -f $sizeMb) -ForegroundColor Green
 # ---------------------------------------------------------------------------
 Write-Host ''
 Write-Host '[3/4] Verificando recursos embebidos...' -ForegroundColor White
-$asm = [System.Reflection.Assembly]::LoadFrom($exe)
+# Se carga desde bytes, no con LoadFrom: LoadFrom deja el exe bloqueado hasta que
+# muere el proceso y despues no se puede firmar ni copiar a dist\.
+$asm = [System.Reflection.Assembly]::Load([IO.File]::ReadAllBytes($exe))
 $resources = $asm.GetManifestResourceNames()
 
 $expected = @(
@@ -140,20 +142,49 @@ Write-Host ''
 Write-Host '[4/4] Firma Authenticode...' -ForegroundColor White
 
 if ($Sign) {
-    if (-not $Thumbprint) { throw 'Falta -Thumbprint del certificado de firma.' }
+    # Certificado: por huella si se indica; si no, el de firma de codigo de
+    # danielnvcd en el almacen del usuario (el que crea scripts\tools\New-SigningCert.ps1).
+    $cert = $null
+    if ($Thumbprint) {
+        $cert = Get-ChildItem Cert:\CurrentUser\My, Cert:\LocalMachine\My -CodeSigningCert -ErrorAction SilentlyContinue |
+                Where-Object { $_.Thumbprint -ieq $Thumbprint } | Select-Object -First 1
+        if (-not $cert) { throw "No hay ningun certificado de firma de codigo con huella $Thumbprint." }
+    } else {
+        $cert = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert -ErrorAction SilentlyContinue |
+                Where-Object { $_.Subject -like 'CN=danielnvcd*' -and $_.NotAfter -gt (Get-Date) } |
+                Sort-Object NotAfter -Descending | Select-Object -First 1
+        if (-not $cert) { throw 'No hay certificado de firma. Crea uno con scripts\tools\New-SigningCert.ps1 o indica -Thumbprint.' }
+    }
+    Write-Host ("  Certificado: {0}  (huella {1}, caduca {2:yyyy-MM-dd})" -f $cert.Subject, $cert.Thumbprint, $cert.NotAfter)
 
     $signtool = Get-ChildItem 'C:\Program Files (x86)\Windows Kits\10\bin' -Filter 'signtool.exe' -Recurse -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -match 'x64' } |
                 Sort-Object FullName -Descending | Select-Object -First 1
-    if (-not $signtool) { throw 'No se encuentra signtool.exe. Instala el Windows SDK.' }
 
-    & $signtool.FullName sign /sha1 $Thumbprint /fd SHA256 /tr $TimestampUrl /td SHA256 /v $exe
-    if ($LASTEXITCODE -ne 0) { throw "signtool fallo (codigo $LASTEXITCODE)." }
-    Write-Host '  + Firmado y sellado en el tiempo' -ForegroundColor Green
+    if ($signtool) {
+        & $signtool.FullName sign /sha1 $cert.Thumbprint /fd SHA256 /tr $TimestampUrl /td SHA256 /v $exe
+        if ($LASTEXITCODE -ne 0) { throw "signtool fallo (codigo $LASTEXITCODE)." }
+    } else {
+        # Sin Windows SDK: PowerShell firma igual de bien (Authenticode + sello de tiempo RFC 3161).
+        $sig = Set-AuthenticodeSignature -FilePath $exe -Certificate $cert -HashAlgorithm SHA256 -TimestampServer $TimestampUrl -ErrorAction Stop
+        if ($sig.Status -ne 'Valid' -and $sig.Status -ne 'UnknownError') { throw "La firma no es valida: $($sig.Status) - $($sig.StatusMessage)" }
+    }
+
+    $check = Get-AuthenticodeSignature $exe
+    # 'UnknownError' = firmado correctamente pero el emisor no es de confianza en ESTE
+    # equipo (certificado autofirmado sin instalar). En los equipos con el .cer
+    # instalado sale 'Valid'.
+    $selfSigned = ($check.SignerCertificate.Subject -eq $check.SignerCertificate.Issuer)
+    Write-Host ("  + Firmado por {0}; estado aqui: {1}" -f $check.SignerCertificate.Subject, $check.Status) -ForegroundColor Green
+    if ($selfSigned) {
+        Write-Host '  i Certificado AUTOFIRMADO: en cada equipo destino hay que instalar build\cert\*.cer' -ForegroundColor Yellow
+        Write-Host '    (scripts\tools\Install-SigningCert.ps1) para que UAC muestre "Editor comprobado".' -ForegroundColor Yellow
+        Write-Host '    SmartScreen seguira avisando la primera vez: eso solo lo quita un certificado de CA publica.' -ForegroundColor Yellow
+    }
 } else {
     Write-Host '  ! SIN FIRMAR.' -ForegroundColor Yellow
     Write-Host '    Valido para laboratorio. En los 400 equipos, SmartScreen y el antivirus' -ForegroundColor Yellow
-    Write-Host '    lo bloquearan. Ver seccion 10 del PLAN antes de desplegar.' -ForegroundColor Yellow
+    Write-Host '    lo bloquearan. Usa -Sign (ver seccion 10 del PLAN).' -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
