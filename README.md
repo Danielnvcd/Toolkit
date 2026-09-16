@@ -1,127 +1,166 @@
-# Toolkit Call Center
+# Toolkit
 
-Herramienta de configuración para una flota de 400 PCs de call center: activa la ubicación de Windows (servicio + políticas + todos los perfiles, **sin reiniciar el equipo**), instala el stack de aplicaciones corporativas, diagnostica la red y gestiona las cuentas de usuario locales.
+Utilidad portable para Windows 10/11 que resuelve, desde una sola ventana, cuatro tareas que normalmente hay que hacer a mano y en varios sitios:
 
-**El entregable es un único `Toolkit.exe` firmado, sin dependencias, con los scripts dentro.**
+- **Activar la ubicación** de Windows para todos los usuarios del equipo, **sin reiniciar**.
+- **Gestionar las cuentas locales**: ver quién hay, cambiar o quitar contraseñas, habilitar, deshabilitar, crear y eliminar usuarios.
+- **Instalar aplicaciones** en silencio a partir de un catálogo.
+- **Diagnosticar la red**: latencia, jitter, pérdida de paquetes, DNS, MTU, puertos y TLS.
+
+Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a una carpeta compartida y se ejecuta. Todo lo que necesita ya viene con Windows.
 
 ---
 
-## Cómo está montado
+## Empezar
 
+1. Copia `Toolkit.exe` al equipo (o ejecútalo directamente desde el USB).
+2. Haz doble clic. Pedirá permisos de administrador: son necesarios porque toca servicios, registro y cuentas.
+3. Pulsa **Auditar**. No cambia nada; solo muestra el estado del equipo. Empieza siempre por ahí.
+4. Marca lo que quieras aplicar y pulsa **Aplicar cambios**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
+
+Si algo no te convence, **Revertir** deshace todos los cambios de registro que hizo el toolkit en ese equipo.
+
+---
+
+## Qué hace cada parte
+
+### Ubicación
+
+Activar la ubicación en Windows no es un solo interruptor: hay cuatro capas y, si falta una, las aplicaciones no reciben la posición y no dicen por qué. El toolkit las aplica todas:
+
+1. Servicio de geolocalización (`lfsvc`) en automático y arrancado.
+2. Interruptor maestro del sistema.
+3. Consentimiento de la máquina y de **cada usuario del equipo**, incluidos los que no tienen la sesión abierta y el perfil `Default` (para los usuarios que se creen después). Se activa también el permiso para **aplicaciones de escritorio**, que es el que suelen necesitar los programas clásicos.
+4. Políticas para que nadie la desactive desde Configuración (opción *Impedir que el usuario desactive la ubicación*, marcada por defecto).
+
+**Por qué no hace falta reiniciar:** el servicio de ubicación solo lee su configuración al arrancar. Por eso muchas guías terminan con "reinicia el equipo". El toolkit, en lugar de eso, reinicia el servicio y a continuación pregunta a la API de geolocalización de Windows si responde. Nadie pierde la sesión.
+
+### Usuarios
+
+La pestaña **Usuarios** muestra todas las cuentas locales con su estado, si son administradoras, si tienen contraseña, cuándo iniciaron sesión por última vez, si tienen la sesión abierta y dónde está su carpeta de perfil. Desde ahí puedes:
+
+| Botón | Qué hace |
+|---|---|
+| Nuevo usuario | Crea una cuenta; con o sin contraseña, administrador o no |
+| Cambiar contraseña | Pide la contraseña dos veces |
+| Quitar contraseña | La cuenta entra sin contraseña (Windows solo lo permite en el propio equipo, no por red ni escritorio remoto) |
+| Habilitar / Deshabilitar | Oculta o vuelve a mostrar la cuenta en la pantalla de inicio |
+| Eliminar usuario | Borra la cuenta; pregunta si quieres borrar también su carpeta `C:\Users\<nombre>` |
+
+Por seguridad, no deja eliminar las cuentas integradas de Windows, la cuenta con la que estás ejecutando el toolkit ni una cuenta con sesión abierta. Las contraseñas nunca se escriben en el log. Estas acciones no se pueden revertir con el botón *Revertir*.
+
+### Aplicaciones
+
+Instala en silencio las aplicaciones definidas en `catalog.json` (MSI o EXE): comprueba el hash del instalador, espera si otro instalador está en marcha, reintenta y verifica que la aplicación quedó instalada. Ver la sección *Configurar* para añadir las tuyas.
+
+### Red
+
+Mide contra los destinos que indiques en `catalog.json`: ping (latencia, jitter y pérdida), resolución DNS, puertos TCP, certificados TLS, MTU y proxy. Sirve para saber si un "va lento" o "se corta" es culpa de la red o del equipo.
+
+---
+
+## Línea de comandos
+
+La misma lógica está disponible sin interfaz, para scripts o tareas programadas:
+
+```powershell
+Toolkit.exe                                # interfaz gráfica
+Toolkit.exe /report                        # auditoría completa, no modifica nada
+Toolkit.exe /report /modules:users         # solo el inventario de cuentas
+Toolkit.exe /silent /all                   # aplica todo sin preguntar
+Toolkit.exe /silent /modules:location      # solo la ubicación
+Toolkit.exe /silent /apps:ejemplo-7zip     # solo esas apps del catálogo
+Toolkit.exe /rollback                      # revierte los cambios de registro
+Toolkit.exe /nolockdown                    # no bloquea el interruptor de ubicación al usuario
+Toolkit.exe /?                             # ayuda completa
 ```
-Toolkit.exe                       el envase (C#)
-   └── recursos embebidos         el trabajo real (PowerShell)
-         Toolkit.Core.psm1
-         Toolkit.Location.psm1    modulo A
-         Toolkit.Apps.psm1        modulo B
-         Toolkit.Network.psm1     modulo C
-         Toolkit.Users.psm1       modulo D (usuarios locales)
-         Invoke-ToolkitRun.ps1    orquestador
-         catalog.json
+
+En modo desatendido (`/silent`) el módulo de usuarios **solo lista** las cuentas; nunca las modifica. Cambiar contraseñas o borrar usuarios se hace siempre desde la interfaz.
+
+Códigos de salida: `0` correcto · `3010` correcto pero requiere reinicio (lo pidió algún instalador) · `5` sin permisos de administrador · `1001` falló la ubicación · `1002` falló alguna aplicación · `1003` red en estado crítico · `1` otro error.
+
+---
+
+## Configurar
+
+Toda la configuración está en un solo archivo, `catalog.json`. El exe lleva uno dentro; si pones otro **junto al exe**, se usa ese (útil para tener una versión por cliente o por sede sin recompilar).
+
+```jsonc
+{
+  "location": {
+    "lockDown": true,        // impedir que el usuario desactive la ubicación
+    "verifyWithApi": true,   // preguntar a Windows si la ubicación responde tras aplicar
+    "getPosition": false     // true = obtener coordenadas reales (tarda hasta 20 s)
+  },
+  "network": {
+    "pingTargets": [ { "label": "Internet", "host": "8.8.8.8" } ],
+    "dnsNames":    [ "www.google.com" ],
+    "tcpTargets":  [ { "label": "Web", "host": "ejemplo.com", "port": 443 } ]
+  },
+  "apps": [ /* ver más abajo */ ]
+}
 ```
 
-Los `.psm1` **nunca se escriben en disco**: se cargan en un runspace de PowerShell dentro del propio proceso. Eso elimina los problemas de `ExecutionPolicy`, de antivirus bloqueando scripts sueltos y de que alguien edite un script en un equipo y la flota diverja.
+### Añadir una aplicación
 
-`Invoke-ToolkitRun.ps1` es la **única** fuente de la lógica y la comparten los dos caminos: el exe y `Toolkit.ps1` (envoltorio de línea de comandos para depurar sin recompilar). La interfaz gráfica y el despliegue masivo ejecutan literalmente el mismo código.
+Cada aplicación del catálogo necesita saber cómo instalarse en silencio y cómo comprobar que quedó instalada. No lo escribas a mano: el script `scripts\tools\New-AppFicha.ps1` lee el instalador y genera la ficha:
 
-El plan completo está en [`docs/PLAN.md`](docs/PLAN.md).
-El procedimiento de pruebas en máquina virtual, en [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).
+```powershell
+scripts\tools\New-AppFicha.ps1 -Path 'D:\instaladores\MiApp.msi' -Id miapp
+```
+
+Pega el resultado en `apps` del `catalog.json`, prueba la instalación en un equipo limpio y pon `"enabled": true`. El catálogo incluye un ejemplo funcional (7-Zip) para probar el mecanismo.
 
 ---
 
 ## Compilar
 
-Requiere **Windows** con el SDK de .NET (incluye el targeting pack de .NET Framework 4.8).
+Solo hace falta si cambias algo. Requiere Windows con el SDK de .NET.
 
 ```powershell
 cd build
-.\build.ps1                                  # valida scripts -> compila -> verifica recursos
-.\build.ps1 -Sign -Thumbprint <huella>       # + firma Authenticode
+.\build.ps1                                  # valida scripts -> compila -> comprueba que es un solo archivo
+.\build.ps1 -Sign -Thumbprint <huella>       # además lo firma (recomendado antes de distribuirlo)
 ```
 
-`build.ps1` valida la sintaxis de cada `.psm1` **antes** de embeberlo. Un error de sintaxis no rompe la compilación de C#: se embebería igual y explotaría en el equipo del cliente.
+Deja el resultado en `dist\Toolkit.exe` junto con su SHA-256.
+
+Cómo está montado, en una línea: el exe es un envase en C# que lleva embebidos unos módulos de PowerShell (`scripts\modules\`) y los ejecuta en memoria, sin escribirlos en disco. Eso evita problemas de `ExecutionPolicy`, de antivirus bloqueando scripts sueltos y de scripts editados por ahí. Para desarrollar sin recompilar, `scripts\Toolkit.ps1` ejecuta exactamente los mismos módulos desde un menú de consola.
+
+### Requisitos en el equipo destino
+
+Nada que instalar. Todo viene de fábrica:
+
+| Necesita | Dónde está |
+|---|---|
+| .NET Framework 4.8 | Windows 10 1903 o posterior y Windows 11 |
+| Windows PowerShell 5.1 | Cualquier Windows 10/11 (no hace falta PowerShell 7) |
+
+Lo único que el exe escribe en el equipo es la carpeta `C:\ProgramData\Toolkit\` (logs, reportes y el archivo de reversión). Es deliberado: el archivo de reversión debe quedarse en la máquina para poder deshacer los cambios otro día, aunque ya no tengas el mismo USB. Se puede cambiar con `/root:<ruta>`.
 
 ---
 
-## Usar
+## Para muchos equipos
+
+Si tienes que aplicar esto a decenas o cientos de equipos, el toolkit puede **instalarse a sí mismo como agente**: una tarea programada que se ejecuta como SYSTEM, lee un `manifest.json` de una carpeta compartida y aplica lo que ahí se indique. A partir de ese momento, cualquier cambio se despliega editando un JSON en el share, sin volver a tocar los equipos.
 
 ```powershell
-Toolkit.exe                            # interfaz grafica (tecnico en sitio)
-Toolkit.exe /report                    # auditoria: NO modifica nada  <- empieza siempre por aqui
-Toolkit.exe /silent /all               # desatendido: aplica todo
-Toolkit.exe /silent /modules:location,network
-Toolkit.exe /silent /apps:netextender,goto
-Toolkit.exe /report /modules:users        # inventario de cuentas locales
-Toolkit.exe /rollback                  # revierte los cambios de registro
-Toolkit.exe /install-agent /share:\\SRV-FILE\Toolkit$ /ring:1-piloto
+Toolkit.exe /install-agent /share:\\SERVIDOR\Toolkit$ /ring:piloto
 Toolkit.exe /uninstall-agent
 ```
 
-### Ubicación: por qué no hace falta reiniciar
+Los reportes de cada equipo se suben al share en JSON, así que se puede ver el estado de todos sin entrar uno por uno. Para el primer despliegue hay un script remoto (`scripts\deploy\Deploy-Remote.ps1`) que lo hace por WinRM o SMB a partir de una lista de equipos.
 
-`lfsvc` (el servicio de geolocalización) lee el interruptor maestro y el consentimiento **solo al arrancar**. Escribir el registro y no reiniciar el servicio es la causa de que "se active pero no funciona hasta reiniciar la PC". El módulo, tras aplicar las cuatro capas, **reinicia `lfsvc`** y después consulta la API de geolocalización para confirmar que responde. No se reinicia el equipo ni se cierra ninguna sesión.
+Consejos si vas por ese camino:
 
-Por cada perfil de usuario (con sesión abierta, con la colmena descargada, y el perfil `Default` para usuarios futuros) se escriben dos consentimientos: el general y el de **apps de escritorio** (`NonPackaged`), que es el que necesitan el softphone y el CRM.
+- **Firma el exe.** Sin firma, SmartScreen y los antivirus lo bloquean y acabas creando excepciones a mano en cada equipo.
+- **Ajusta la ventana de mantenimiento** (`Test-MaintenanceWindow` en `Toolkit.Core.psm1`). Por defecto solo instala aplicaciones entre las 23:00 y las 07:00 para no interrumpir a nadie.
+- **Prueba en máquina virtual** antes. El procedimiento paso a paso está en [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).
 
-### Usuarios locales
-
-La pestaña **Usuarios** de la interfaz (y la opción `U` del menú de `Toolkit.ps1`) permite:
-
-| Acción | Detalle |
-|---|---|
-| Listar | estado, si es administrador, si requiere contraseña, último inicio, sesión abierta, carpeta de perfil |
-| Cambiar contraseña | vuelve a marcar la cuenta como "contraseña requerida" |
-| Quitar contraseña | inicio de sesión directo; Windows sólo lo permite en consola local, no por red ni RDP |
-| Habilitar / deshabilitar | |
-| Eliminar | con o sin la carpeta `C:\Users\<nombre>` |
-| Crear | con o sin contraseña, opcionalmente administrador local |
-
-Protecciones: no se puede eliminar una cuenta integrada de Windows, la cuenta que está ejecutando el toolkit ni una cuenta con sesión abierta. Estas acciones **no** pasan por `rollback.json` (no son reversibles) y se registran en el log sin la contraseña. En el despliegue desatendido (`/silent`) el módulo `users` sólo inventaría; nunca modifica cuentas.
-
-### Códigos de salida
-
-| | | | |
-|---|---|---|---|
-| `0` correcto | `3010` requiere reinicio | `5` sin privilegios | `1` fallo genérico |
-| `1001` falló ubicación | `1002` falló alguna app | `1003` red crítica | |
-
----
-
-## Antes de desplegar a los 400
-
-1. **Rellenar las fichas de aplicación.** No se escriben a mano:
-   ```powershell
-   scripts\tools\New-AppFicha.ps1 -Path 'D:\instaladores\NetExtender.msi' -Id netextender -OutputDir docs\APP-FICHAS
-   ```
-   Lee el `ProductCode`, la versión, las propiedades públicas del MSI (ahí están `SERVER`, `COMPANYKEY`...) y el SHA-256. Después hay que **validar la instalación en una VM limpia** antes de poner `enabled: true`.
-
-2. **Cambiar los destinos de red** en `scripts/config/catalog.json` (todo lo marcado `CAMBIAR`): conmutador, CRM, VPN.
-
-3. **Ajustar la ventana de mantenimiento** (`Test-MaintenanceWindow` en `Toolkit.Core.psm1`) a los turnos reales. Por defecto es 23:00–07:00; en una operación 24/7 no se instalaría nunca nada.
-
-4. **Comprar el certificado de firma.** Sin firma, SmartScreen y el antivirus bloquean el exe y acabas creando 400 excepciones a mano. Es la dependencia externa más lenta del proyecto.
-
-5. **Validar para qué se necesita la ubicación** con el proveedor de telefonía. Sin GPS, Windows la resuelve por WiFi/IP con precisión de decenas o cientos de metros; si el caso de uso es E911, hay que confirmar que eso sirve.
-
----
-
-## Despliegue sin infraestructura
-
-No hay GPO, ni Intune, ni RMM. La estrategia (detallada en §12 del plan) es que el exe **se instale a sí mismo como agente**: una tarea programada que corre como SYSTEM cada 4 horas, lee un `manifest.json` de un recurso compartido y se auto-actualiza.
-
-Una sola pasada manual por equipo. A partir de ahí, cualquier cambio se despliega editando un JSON en el share.
-
-```powershell
-# Despliegue masivo inicial (WinRM, con respaldo por SMB)
-scripts\deploy\Deploy-Remote.ps1 -ComputerList .\equipos-anillo1.txt `
-                                 -SharePath \\SRV-FILE\Toolkit$ `
-                                 -Credential (Get-Credential)
-```
-
-Deja un CSV con el resultado por equipo y un `.pendientes.txt` con los que hay que reintentar o visitar a mano.
+El diseño completo está en [`docs/PLAN.md`](docs/PLAN.md).
 
 ---
 
 ## Estado
 
-El código está escrito pero **no se ha ejecutado todavía**: se desarrolló en Linux y necesita Windows para compilarse y probarse. Ver "Estado actual del repositorio" en el plan para el detalle de qué falta.
+El código está escrito pero **todavía no se ha compilado ni ejecutado en Windows** (se desarrolló en Linux). Antes de usarlo en equipos reales, sigue [`docs/PRUEBAS-VM.md`](docs/PRUEBAS-VM.md).

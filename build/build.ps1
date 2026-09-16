@@ -111,6 +111,28 @@ if ($missing.Count -gt 0) {
 foreach ($r in $resources) { Write-Host "  + $r" -ForegroundColor DarkGray }
 
 # ---------------------------------------------------------------------------
+#  3b. Verificar que es PORTABLE: un solo archivo
+#      Si el SDK dejo DLLs o un .config junto al exe, es que alguna referencia
+#      se esta copiando en local y el exe podria depender de ellas.
+# ---------------------------------------------------------------------------
+Write-Host ''
+Write-Host '[3b] Verificando que el exe es portable (un solo archivo)...' -ForegroundColor White
+$binDir  = Split-Path $exe -Parent
+$extras  = @(Get-ChildItem -Path $binDir -File | Where-Object { $_.Name -ne 'Toolkit.exe' -and $_.Extension -in '.dll', '.config', '.pdb' })
+if ($extras.Count -gt 0) {
+    foreach ($x in $extras) { Write-Host ("  x {0}" -f $x.Name) -ForegroundColor Red }
+    throw 'El build dejo dependencias junto al exe. Revisa las referencias del csproj (ExcludeAssets/Private=false).'
+}
+# Comprobacion cruzada: ninguna referencia del exe debe apuntar fuera del GAC de .NET / PowerShell.
+$allowed = '^(mscorlib|System(\..+)?|Microsoft\.CSharp|System\.Management\.Automation|Microsoft\.PowerShell\..+|netstandard|WindowsBase|PresentationCore)$'
+$foreign = @($asm.GetReferencedAssemblies() | Where-Object { $_.Name -notmatch $allowed })
+if ($foreign.Count -gt 0) {
+    foreach ($f in $foreign) { Write-Host ("  x referencia externa: {0}" -f $f.FullName) -ForegroundColor Red }
+    throw 'El exe referencia ensamblados que no vienen con Windows. No seria portable.'
+}
+Write-Host '  + Un solo archivo, sin dependencias fuera de Windows / .NET 4.8 / PowerShell 5.1' -ForegroundColor Green
+
+# ---------------------------------------------------------------------------
 #  4. Firmar
 # ---------------------------------------------------------------------------
 Write-Host ''
@@ -147,6 +169,7 @@ Write-Host ("  Ejecutable : {0}" -f (Join-Path $distDir 'Toolkit.exe'))
 Write-Host ("  Tamano     : {0} MB" -f $sizeMb)
 Write-Host ("  SHA-256    : {0}" -f $hash)
 Write-Host ("  Firmado    : {0}" -f $(if ($Sign) { 'si' } else { 'NO' }))
+Write-Host '  Portable   : si (un solo archivo; copiar a USB o share y ejecutar)'
 Write-Host ''
 Write-Host '  Publica el hash junto al binario: es como los equipos verifican' -ForegroundColor DarkGray
 Write-Host '  que la version que reciben del share no ha sido manipulada.' -ForegroundColor DarkGray

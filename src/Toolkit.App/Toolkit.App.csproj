@@ -14,6 +14,19 @@
     <Product>Toolkit Call Center</Product>
     <!-- Sin ventana de consola propia: en modo CLI se engancha a la del padre (Program.cs) -->
     <DebugType>embedded</DebugType>
+
+    <!--
+      PORTABLE: el entregable es SOLO Toolkit.exe. Nada de .pdb, .config ni DLLs al lado.
+        - DebugType embedded            -> los simbolos van dentro del exe
+        - sin binding redirects/config  -> no se genera Toolkit.exe.config
+        - Deterministic                 -> el mismo codigo produce el mismo binario (hash reproducible)
+      Todo lo que necesita en tiempo de ejecucion (.NET Framework 4.8, PowerShell 5.1,
+      System.DirectoryServices, WinForms) viene de fabrica en Windows 10/11.
+    -->
+    <AutoGenerateBindingRedirects>false</AutoGenerateBindingRedirects>
+    <GenerateSupportedRuntime>false</GenerateSupportedRuntime>
+    <Deterministic>true</Deterministic>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,14 +34,18 @@
       Ensamblados de referencia de Windows PowerShell 5.1.
       No se distribuye ninguna DLL: en tiempo de ejecucion resuelve contra la
       System.Management.Automation del GAC, presente en todo Windows 10/11.
+      ExcludeAssets=runtime evita que el SDK copie esas DLL a bin\ (romperia
+      la regla de "un solo archivo" y engordaria el exe sin aportar nada).
     -->
-    <PackageReference Include="Microsoft.PowerShell.5.1.ReferenceAssemblies" Version="1.0.0" />
+    <PackageReference Include="Microsoft.PowerShell.5.1.ReferenceAssemblies" Version="1.0.0" ExcludeAssets="runtime" PrivateAssets="all" />
   </ItemGroup>
 
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
     <Reference Include="System.Drawing" />
     <Reference Include="System.Management" />
+    <!-- System.DirectoryServices lo usa Toolkit.Users.psm1 (ADSI) dentro del runspace; esta en el GAC. -->
+    <Reference Include="System.DirectoryServices" />
   </ItemGroup>
 
   <ItemGroup>
