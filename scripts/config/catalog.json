@@ -96,55 +96,53 @@
 
     {
       "id": "netextender",
-      "name": "SonicWall NetExtender",
-      "version": "10.3.2",
-      "enabled": false,
+      "name": "SonicWall NetExtender (VPN)",
+      "version": "10.3.5",
+      "enabled": true,
       "installerType": "msi",
       "source": {
-        "share": "netextender\\10.3.2\\NetExtender.msi",
-        "url": ""
+        "share": "netextender\\10.3.5\\NetExtender-x64-10.3.5.msi",
+        "url": "https://software.sonicwall.com/NetExtender/NetExtender-x64-10.3.5.msi"
       },
-      "sha256": "",
+      "sha256": "7e2b35ed2629febfc76acd747793cc712b5a2f4fecbfa69c914fc25ed28713a3",
       "silentArgs": "/qn /norestart",
       "properties": {
         "SERVER": "",
-        "DOMAIN": ""
+        "DOMAIN": "",
+        "MODE": "",
+        "EDITABLE": ""
       },
       "detection": {
-        "method": "uninstall",
-        "displayName": "NetExtender",
-        "minVersion": "10.3.2"
-      },
-      "successCodes": [0, 3010, 1641],
-      "requiresReboot": false,
-      "notes": "VERIFICAR: la rama 10.2.x usa instalador EXE (InstallShield, conmutadores /s /v\"/qn\"); 10.3+ usa MSI. Confirmar version y nombres de propiedades SERVER/DOMAIN con el fabricante antes de activar."
-    },
-
-    {
-      "id": "goto",
-      "name": "GoTo (VERIFICAR producto exacto)",
-      "version": "0.0.0",
-      "enabled": false,
-      "installerType": "msi",
-      "source": {
-        "share": "goto\\CAMBIAR\\installer.msi",
-        "url": ""
-      },
-      "sha256": "",
-      "silentArgs": "/qn /norestart",
-      "properties": {
-        "COMPANYKEY": ""
-      },
-      "detection": {
-        "method": "uninstall",
-        "displayName": "GoTo",
+        "method": "productCode",
+        "productCode": "{1271D373-54B1-4542-A9A3-2DEA032C9F5B}",
         "minVersion": ""
       },
       "successCodes": [0, 3010, 1641],
       "requiresReboot": false,
-      "notes": "BLOQUEANTE: 'GoTo' son varios productos distintos (GoTo Resolve, GoToAssist Remote Support, GoTo Opener, GoTo Meeting, GoTo Connect), cada uno con su instalador y sus propiedades. Determinar cual se usa. La clave de empresa NO debe quedar aqui en claro: leerla del share con ACL (ver seccion 11 del PLAN)."
+      "notes": "MSI oficial x64 (ALLUSERS=1, firmado por SonicWall Inc.) desde software.sonicwall.com; la URL lleva la version, asi que es estable y el hash no cambia. Propiedades opcionales para que el agente no tenga que escribir nada: SERVER = FQDN del SMA/firewall (p. ej. vpn.empresa.com), DOMAIN = dominio de autenticacion (p. ej. LocalDomain), MODE = default | onlyone | alwayson, EDITABLE = FALSE para bloquear servidor y dominio. Vacio = no se pasa. Para actualizar: cambiar la version en url y share, Get-FileHash y leer el ProductCode del MSI. Instala el driver de red virtual: si Windows pide reiniciar, el toolkit devuelve 3010."
     },
 
+    {
+      "id": "goto",
+      "name": "GoTo (app unificada: Connect / Meeting)",
+      "version": "4.19.3",
+      "enabled": true,
+      "installerType": "msi",
+      "source": {
+        "share": "goto\\4.19.3\\GoToSetupMachine-x64.msi",
+        "url": "https://goto-desktop.goto.com/GoToSetupMachine-x64.msi"
+      },
+      "sha256": "9fe2a24bb2f7d8f0dcd1a9c8429e24841725e49f0fae0e5434be86bb14d09797",
+      "silentArgs": "/qn /norestart",
+      "detection": {
+        "method": "productCode",
+        "productCode": "{31AA4D37-56D4-42AC-9DFD-FF4B4795DA2D}",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "MSI oficial por equipo ('GoTo Machine Installer', ALLUSERS=1, firmado por GoTo Technologies USA): instala la app GoTo para todos los usuarios del PC. La URL es estable (siempre la version actual), asi que cuando GoTo publique una nueva el sha256 y el productCode cambiaran: descargar, Get-FileHash, y leer el ProductCode del MSI (scripts\\tools\\New-AppFicha.ps1 lo hace). minVersion vacio: la app se autoactualiza. Los agentes inician sesion con su cuenta de GoTo la primera vez."
+    },
     {
       "id": "maxassist",
       "name": "MaxAssist (VERIFICAR)",
