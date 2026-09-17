@@ -144,6 +144,28 @@
       "notes": "MSI oficial por equipo ('GoTo Machine Installer', ALLUSERS=1, firmado por GoTo Technologies USA): instala la app GoTo para todos los usuarios del PC. La URL es estable (siempre la version actual), asi que cuando GoTo publique una nueva el sha256 y el productCode cambiaran: descargar, Get-FileHash, y leer el ProductCode del MSI (scripts\\tools\\New-AppFicha.ps1 lo hace). minVersion vacio: la app se autoactualiza. Los agentes inician sesion con su cuenta de GoTo la primera vez."
     },
     {
+      "id": "five9",
+      "name": "Five9 Softphone (VERIFICAR)",
+      "version": "0.0.0",
+      "enabled": false,
+      "installerType": "msi",
+      "source": {
+        "share": "five9\\CAMBIAR\\Five9SoftphoneService.msi",
+        "url": ""
+      },
+      "sha256": "",
+      "silentArgs": "/qn /norestart",
+      "detection": {
+        "method": "uninstall",
+        "displayName": "Five9 Softphone",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "PENDIENTE DEL INSTALADOR. Five9 no publica el MSI en una URL fija: se descarga desde la app del agente (app.five9.com > Tools and Add-ons > Installing the softphone > Windows), con un enlace por tenant y version del tipo https://app.five9.com/softphone/<version>/binaries/Five9SoftphoneService.msi. Cuando lo tengas: (1) scripts\\tools\\New-AppFicha.ps1 -Path Five9SoftphoneService.msi -Id five9 genera esta ficha con sha256 y ProductCode (cambia detection a productCode); (2) copia el MSI al share (packageRepo) o pon la url del tenant, y enabled=true. Solo hace falta para Agent Desktop Plus / Plus Applications con softphone local; en VDI se instala con la propiedad FIVE9_SOFTPHONE_INSTALLER_VDI_CLIENT_MODE=true. El nombre de deteccion 'Five9 Softphone' es el que muestra Programas y caracteristicas: confirmalo con Get-InstalledAppInfo.ps1 -Name Five9 en un equipo que ya lo tenga."
+    },
+
+    {
       "id": "maxassist",
       "name": "MaxAssist (VERIFICAR)",
       "version": "0.0.0",

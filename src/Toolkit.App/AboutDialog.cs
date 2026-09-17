@@ -5,13 +5,14 @@ using System.Windows.Forms;
 namespace Toolkit.App
 {
     /// <summary>
-    /// Acerca de: logo, nombre, version, creador, fecha de compilacion y que hace.
+    /// Acerca de: logo, nombre, versión, creador, fecha de compilación y qué hace.
     /// Los datos salen del ensamblado (ver Program.AppAuthor y el .csproj).
     /// </summary>
     internal sealed class AboutDialog : Form
     {
         public AboutDialog()
         {
+            SuspendLayout();   // ver MainForm.BuildUi: el escalado DPI se aplica en ResumeLayout, con todos los hijos ya creados
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
             Text = "Acerca de " + Program.AppName;
@@ -20,99 +21,91 @@ namespace Toolkit.App
             StartPosition = FormStartPosition.CenterParent;
             MaximizeBox = MinimizeBox = false;
             ShowInTaskbar = false;
-            Font = new Font("Segoe UI", 9F);
-            BackColor = Color.White;
-            ClientSize = new Size(480, 330);
+            Font = Theme.Body;
+            BackColor = Theme.Surface;
+            ClientSize = new Size(500, 330);
 
-            // Filas AutoSize y el formulario se ajusta al contenido en OnLoad: asi
-            // ninguna linea (el enlace, el ultimo) queda fuera aunque el texto
-            // envuelva distinto por DPI o tamano de texto de accesibilidad.
+            // Filas AutoSize y el formulario se ajusta al contenido en OnLoad: así
+            // ninguna línea queda fuera aunque el texto envuelva distinto por DPI o
+            // tamaño de texto de accesibilidad.
             var root = new TableLayoutPanel
             {
                 Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                ColumnCount = 2, RowCount = 2, Padding = new Padding(20, 18, 20, 14)
+                ColumnCount = 2, RowCount = 1, Padding = new Padding(22, 20, 22, 16)
             };
             root.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-            var logo = new PictureBox { Size = new Size(72, 72), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 0, 18, 0) };
-            if (EmbeddedScripts.AppIcon != null)
-            {
-                try { logo.Image = new Icon(EmbeddedScripts.AppIcon, 64, 64).ToBitmap(); } catch { }
-            }
+            var logo = new PictureBox { Size = new Size(72, 72), SizeMode = PictureBoxSizeMode.Zoom, Margin = new Padding(0, 2, 20, 0) };
+            logo.Image = EmbeddedScripts.AppLogoBitmap(64);
 
             var text = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, AutoSize = true };
             text.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
-            text.Controls.Add(Line(Program.AppName, 15F, FontStyle.Bold, Color.FromArgb(32, 45, 66)));
-            text.Controls.Add(Line("Version " + Program.AppVersion() + "   ·   compilado " + Program.AppBuildDate(), 9F, FontStyle.Regular, Color.DimGray));
-            text.Controls.Add(Line(Program.AppDescription, 9F, FontStyle.Regular, Color.Black, top: 12));
-            text.Controls.Add(Line("Creado por " + Program.AppAuthor, 9.5F, FontStyle.Bold, Color.Black, top: 14));
-            text.Controls.Add(Line(Program.AppCopyright, 8.5F, FontStyle.Regular, Color.DimGray));
+            text.Controls.Add(Line(Program.AppName, Theme.Heading, Theme.Text));
+            text.Controls.Add(Line("Versión " + Program.AppVersion() + "   ·   compilado " + Program.AppBuildDate(), Theme.Body, Theme.TextMuted));
+            text.Controls.Add(Line(Program.AppDescription, Theme.Body, Theme.Text, top: 12));
+            text.Controls.Add(Line("Creado por " + Program.AppAuthor, Theme.BodyBold, Theme.Text, top: 14));
+            text.Controls.Add(Line(Program.AppCopyright, Theme.Small, Theme.TextMuted));
             text.Controls.Add(Line(
-                "Un solo ejecutable, sin instalacion. Los modulos de PowerShell van embebidos y se ejecutan en memoria. " +
-                "Requiere Windows 10/11 con .NET Framework 4.8 y PowerShell 5.1, que vienen de fabrica.",
-                8.5F, FontStyle.Regular, Color.DimGray, top: 12));
+                "Un solo ejecutable, sin instalación. Los módulos de PowerShell van embebidos y se ejecutan en memoria. " +
+                "Requiere Windows 10/11 con .NET Framework 4.8 y PowerShell 5.1, que vienen de fábrica.",
+                Theme.Small, Theme.TextMuted, top: 12));
 
-            // Actualizaciones y guia de uso: la ficha del proyecto en la web.
+            // Actualizaciones y guía de uso: la ficha del proyecto en la web.
             var updates = new LinkLabel
             {
-                Text = "Actualizaciones y guia de uso: " + Program.UpdatesUrl,
-                AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right,
-                Font = new Font("Segoe UI", 9F), Margin = new Padding(0, 12, 0, 2),
-                LinkColor = Color.FromArgb(0, 90, 150), ActiveLinkColor = Color.FromArgb(0, 120, 60),
-                VisitedLinkColor = Color.FromArgb(0, 90, 150), LinkBehavior = LinkBehavior.HoverUnderline
+                Text = Program.UpdatesUrl, AutoSize = true, Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Font = Theme.Body, Margin = new Padding(0, 12, 0, 2),
+                LinkColor = Theme.Accent, ActiveLinkColor = Theme.AccentDark, VisitedLinkColor = Theme.Accent,
+                LinkBehavior = LinkBehavior.HoverUnderline
             };
-            updates.LinkArea = new LinkArea(updates.Text.IndexOf("http", StringComparison.Ordinal), Program.UpdatesUrl.Length);
-            updates.LinkClicked += (s, e) =>
-            {
-                try { System.Diagnostics.Process.Start(Program.UpdatesUrl); }
-                catch (Exception ex) { MessageBox.Show(this, "No se pudo abrir el navegador: " + ex.Message, Program.AppName); }
-            };
+            updates.LinkClicked += (s, e) => OpenSite();
             text.Controls.Add(updates);
-
-            // Botonera: el enlace tambien como boton, que nunca se puede recortar.
-            var web = new Button
-            {
-                Text = "Actualizaciones y guia de uso", AutoSize = true, Height = 30, Padding = new Padding(8, 0, 8, 0),
-                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(0, 90, 150), ForeColor = Color.White,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(0, 14, 10, 0)
-            };
-            web.Click += (s, e) =>
-            {
-                try { System.Diagnostics.Process.Start(Program.UpdatesUrl); }
-                catch (Exception ex) { MessageBox.Show(this, "No se pudo abrir el navegador: " + ex.Message, Program.AppName); }
-            };
-            var ok = new Button
-            {
-                Text = "Cerrar", DialogResult = DialogResult.OK, Width = 90, Height = 30,
-                FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(230, 230, 230), Margin = new Padding(0, 14, 0, 0)
-            };
-            AcceptButton = CancelButton = ok;
-            var buttons = new FlowLayoutPanel
-            {
-                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, FlowDirection = FlowDirection.RightToLeft,
-                Anchor = AnchorStyles.Right, Margin = new Padding(0)
-            };
-            buttons.Controls.Add(ok);
-            buttons.Controls.Add(web);
 
             root.Controls.Add(logo, 0, 0);
             root.Controls.Add(text, 1, 0);
-            root.Controls.Add(buttons, 1, 1);
+
+            // Franja de botones, como en el resto de diálogos.
+            var web = Theme.MakeButton("Actualizaciones y guía de uso", Theme.ButtonKind.Primary, Theme.GlyphGlobe);
+            web.Margin = new Padding(8, 0, 0, 0);
+            web.Click += (s, e) => OpenSite();
+            var ok = Theme.MakeButton("Cerrar", Theme.ButtonKind.Secondary);
+            ok.MinimumSize = new Size(104, 34);
+            ok.Margin = new Padding(8, 0, 0, 0);
+            ok.DialogResult = DialogResult.OK;
+            AcceptButton = CancelButton = ok;
+            var bar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft,
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(14, 12, 14, 6), BackColor = Theme.Window
+            };
+            bar.Controls.Add(ok);
+            bar.Controls.Add(web);
+
             Controls.Add(root);
+            Controls.Add(Theme.Rule(DockStyle.Bottom));
+            Controls.Add(bar);
 
             // Alto final = lo que ocupa el contenido, calculado con el ancho real.
-            Load += (s, e) => ClientSize = new Size(ClientSize.Width, root.GetPreferredSize(new Size(ClientSize.Width, 0)).Height);
+            ResumeLayout(false);
+            PerformLayout();
+            Load += (s, e) => ClientSize = new Size(ClientSize.Width, root.GetPreferredSize(new Size(ClientSize.Width, 0)).Height + bar.Height + 1);
         }
 
-        private static Label Line(string text, float size, FontStyle style, Color color, int top = 0) =>
+        private void OpenSite()
+        {
+            try { System.Diagnostics.Process.Start(Program.UpdatesUrl); }
+            catch (Exception ex) { Dialogs.Error(this, Program.AppName, "No se pudo abrir el navegador: " + ex.Message); }
+        }
+
+        private static Label Line(string text, Font font, Color color, int top = 0) =>
             new Label
             {
                 Text = text, AutoSize = true,
                 Anchor = AnchorStyles.Left | AnchorStyles.Right,   // envuelve al ancho de la columna
-                Font = new Font("Segoe UI", size, style), ForeColor = color,
+                Font = font, ForeColor = color,
                 Margin = new Padding(0, top, 0, 2)
             };
     }

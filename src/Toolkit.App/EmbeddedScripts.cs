@@ -83,6 +83,44 @@ namespace Toolkit.App
             }
         }
 
+        /// <summary>
+        /// El logo de la app como bitmap del tamaño pedido (o el más cercano por
+        /// arriba). Se lee el frame directamente del .ico porque Icon.ToBitmap()
+        /// falla con los .ico cuyos frames van comprimidos en PNG (los nuestros).
+        /// Null si no se pudo: el llamador no pinta logo.
+        /// </summary>
+        public static System.Drawing.Bitmap AppLogoBitmap(int size)
+        {
+            try
+            {
+                byte[] ico;
+                using (var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("Assets/logo.ico"))
+                {
+                    if (stream == null) return null;
+                    using (var ms = new MemoryStream()) { stream.CopyTo(ms); ico = ms.ToArray(); }
+                }
+                int count = BitConverter.ToUInt16(ico, 4);
+                int bestOff = -1, bestLen = 0, bestSize = -1;
+                for (int i = 0; i < count; i++)
+                {
+                    int e = 6 + i * 16;
+                    int w = ico[e] == 0 ? 256 : ico[e];
+                    int len = BitConverter.ToInt32(ico, e + 8);
+                    int off = BitConverter.ToInt32(ico, e + 12);
+                    // El más pequeño que no sea menor que el pedido; si no hay ninguno, el mayor.
+                    bool better;
+                    if (bestOff < 0)        better = true;
+                    else if (w >= size)     better = bestSize < size || w < bestSize;
+                    else                    better = bestSize < size && w > bestSize;
+                    if (better) { bestOff = off; bestLen = len; bestSize = w; }
+                }
+                if (bestOff < 0) return null;
+                using (var ms = new MemoryStream(ico, bestOff, bestLen))
+                    return new System.Drawing.Bitmap(System.Drawing.Image.FromStream(ms));
+            }
+            catch { return null; }
+        }
+
         private static System.Drawing.Image _companyLogo;
 
         /// <summary>Logo de la empresa (assets\bpo-centers-logo.png) para la cabecera. Null si falta.</summary>

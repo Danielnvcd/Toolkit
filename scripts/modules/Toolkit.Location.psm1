@@ -748,12 +748,10 @@ function Test-CheckInReadiness {
     # 3. Wi-Fi
     Write-Log '3/5  Adaptador Wi-Fi (fuente de posicion sin GPS)' -Level INFO
     $wifi = $null
-    try {
-        $wifi = @(Get-NetAdapter -Physical -ErrorAction Stop |
-                  Where-Object { $_.PhysicalMediaType -match '802\.11|Wireless' })
-    } catch { }
+    $adapters = Get-PhysicalAdapter
+    if ($null -ne $adapters) { $wifi = @($adapters | Where-Object { $_.IsWireless }) }
     if ($null -eq $wifi) {
-        Write-Log '  ! No se pudo enumerar adaptadores (Get-NetAdapter no disponible)' -Level WARN
+        Write-Log '  ! No se pudo enumerar adaptadores (WMI no disponible)' -Level WARN
     } elseif ($wifi.Count -eq 0) {
         # Caso tipico de call center: sobremesa por Ethernet. Windows solo tiene la IP publica.
         $warns += 'Equipo solo Ethernet (sin Wi-Fi): Windows ubica por IP publica, con kilometros de error. Con geovalla en Zoho el check-in puede caer fuera del radio.'

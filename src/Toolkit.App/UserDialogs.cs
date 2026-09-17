@@ -5,57 +5,141 @@ using System.Windows.Forms;
 namespace Toolkit.App
 {
     /// <summary>
-    /// Pide una contrasena dos veces. La contrasena nunca se escribe en el log.
+    /// Base de los formularios de entrada: fondo blanco, franja de botones abajo,
+    /// mismo aspecto que los diálogos de confirmación.
     /// </summary>
-    internal sealed class PasswordDialog : Form
+    internal abstract class InputDialog : Form
+    {
+        protected readonly TableLayoutPanel Grid;
+        protected readonly Button Ok, Cancel;
+        private readonly FlowLayoutPanel _bar;
+
+        protected InputDialog(string title, string okText, int width = 440)
+        {
+            SuspendLayout();   // ver MainForm.BuildUi: el escalado DPI se aplica en ResumeLayout, con todos los hijos ya creados
+            AutoScaleMode = AutoScaleMode.Dpi;
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            Text = title;
+            if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterParent;
+            MaximizeBox = MinimizeBox = false;
+            ShowInTaskbar = false;
+            Font = Theme.Body;
+            BackColor = Theme.Surface;
+            ClientSize = new Size(width, 200);
+
+            Grid = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                ColumnCount = 2, Padding = new Padding(22, 18, 22, 10)
+            };
+            Grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            Grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
+
+            Ok = Theme.MakeButton(okText, Theme.ButtonKind.Primary);
+            Cancel = Theme.MakeButton("Cancelar", Theme.ButtonKind.Secondary);
+            Ok.MinimumSize = Cancel.MinimumSize = new Size(104, 34);
+            Ok.Margin = Cancel.Margin = new Padding(8, 0, 0, 0);
+            Cancel.DialogResult = DialogResult.Cancel;
+            Ok.Click += (s, e) => { if (ValidateInput()) DialogResult = DialogResult.OK; };
+
+            _bar = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Bottom, FlowDirection = FlowDirection.RightToLeft,
+                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(14, 12, 14, 6), BackColor = Theme.Window
+            };
+            _bar.Controls.Add(Cancel);
+            _bar.Controls.Add(Ok);
+
+            Controls.Add(Grid);
+            Controls.Add(Theme.Rule(DockStyle.Bottom));
+            Controls.Add(_bar);
+            AcceptButton = Ok;
+            CancelButton = Cancel;
+
+            Load += (s, e) => ClientSize = new Size(ClientSize.Width, Grid.GetPreferredSize(new Size(ClientSize.Width, 0)).Height + _bar.Height + 1);
+        }
+
+        /// <summary>
+        /// Las clases hijas añaden sus controles después del constructor base, así que
+        /// el layout (y con él el escalado DPI) se reanuda aquí, con todo ya creado.
+        /// </summary>
+        protected override void OnLoad(EventArgs e)
+        {
+            ResumeLayout(false);
+            PerformLayout();
+            base.OnLoad(e);
+        }
+
+        /// <summary>Devuelve false (y avisa) si los datos no valen; el diálogo no se cierra.</summary>
+        protected abstract bool ValidateInput();
+
+        protected Label AddLabel(string text, int row) =>
+            Put(new Label { Text = text, AutoSize = true, ForeColor = Theme.Text, Margin = new Padding(0, 7, 14, 0) }, 0, row);
+
+        protected TextBox AddBox(int row, bool password = false)
+        {
+            var t = new TextBox
+            {
+                Dock = DockStyle.Fill, UseSystemPasswordChar = password, BorderStyle = BorderStyle.FixedSingle,
+                Font = Theme.Body, Margin = new Padding(0, 3, 0, 6)
+            };
+            return Put(t, 1, row);
+        }
+
+        protected CheckBox AddCheck(string text, int row, bool chk = false) =>
+            Put(Theme.Check(text, chk), 1, row);
+
+        protected T Put<T>(T c, int col, int row) where T : Control
+        {
+            Grid.Controls.Add(c, col, row);
+            return c;
+        }
+    }
+
+    /// <summary>
+    /// Pide una contraseña dos veces. La contraseña nunca se escribe en el log.
+    /// </summary>
+    internal sealed class PasswordDialog : InputDialog
     {
         private readonly TextBox _pwd1, _pwd2;
 
         public string Password => _pwd1.Text;
 
-        public PasswordDialog(string title, string userName)
+        public PasswordDialog(string title, string userName) : base(title, "Cambiar")
         {
-            Text = title;
-            AutoScaleMode = AutoScaleMode.Dpi;
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            ClientSize = new Size(384, 160);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = MinimizeBox = false;
-            Font = new Font("Segoe UI", 9F);
-
-            var lbl = new Label { Text = "Usuario:  " + userName, Left = 16, Top = 14, Width = 350, Font = new Font("Segoe UI", 9F, FontStyle.Bold) };
-            var l1  = new Label { Text = "Nueva contrasena", Left = 16, Top = 46, Width = 130 };
-            var l2  = new Label { Text = "Repetir contrasena", Left = 16, Top = 78, Width = 130 };
-            _pwd1 = new TextBox { Left = 150, Top = 43, Width = 216, UseSystemPasswordChar = true };
-            _pwd2 = new TextBox { Left = 150, Top = 75, Width = 216, UseSystemPasswordChar = true };
-
-            var ok = new Button { Text = "Aceptar", Left = 190, Top = 118, Width = 85, DialogResult = DialogResult.None };
-            var cancel = new Button { Text = "Cancelar", Left = 281, Top = 118, Width = 85, DialogResult = DialogResult.Cancel };
-            ok.Click += (s, e) =>
+            var who = new Label
             {
-                if (_pwd1.Text != _pwd2.Text)
-                {
-                    MessageBox.Show(this, "Las contrasenas no coinciden.", "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (_pwd1.Text.Length == 0)
-                {
-                    MessageBox.Show(this, "Para dejar la cuenta sin contrasena usa el boton 'Quitar contrasena'.", "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    return;
-                }
-                DialogResult = DialogResult.OK;
+                Text = userName, AutoSize = true, Font = Theme.Title, ForeColor = Theme.Text,
+                Margin = new Padding(0, 0, 0, 12)
             };
+            Grid.Controls.Add(who, 0, 0);
+            Grid.SetColumnSpan(who, 2);
 
-            Controls.AddRange(new Control[] { lbl, l1, l2, _pwd1, _pwd2, ok, cancel });
-            AcceptButton = ok;
-            CancelButton = cancel;
+            AddLabel("Nueva contraseña", 1);   _pwd1 = AddBox(1, password: true);
+            AddLabel("Repetir contraseña", 2); _pwd2 = AddBox(2, password: true);
+        }
+
+        protected override bool ValidateInput()
+        {
+            if (_pwd1.Text != _pwd2.Text)
+            {
+                Dialogs.Warn(this, "Contraseña", "Las contraseñas no coinciden.");
+                return false;
+            }
+            if (_pwd1.Text.Length == 0)
+            {
+                Dialogs.Info(this, "Contraseña", "Para dejar la cuenta sin contraseña usa el botón 'Quitar contraseña'.");
+                return false;
+            }
+            return true;
         }
     }
 
     /// <summary>Datos para crear una cuenta local nueva.</summary>
-    internal sealed class NewUserDialog : Form
+    internal sealed class NewUserDialog : InputDialog
     {
         private readonly TextBox _name, _fullName, _pwd1, _pwd2;
         private readonly CheckBox _noPassword, _admin, _neverExpires;
@@ -67,63 +151,43 @@ namespace Toolkit.App
         public bool   Administrator => _admin.Checked;
         public bool   PasswordNeverExpires => _neverExpires.Checked;
 
-        public NewUserDialog()
+        public NewUserDialog() : base("Nuevo usuario local", "Crear", 460)
         {
-            Text = "Nuevo usuario local";
-            AutoScaleMode = AutoScaleMode.Dpi;
-            AutoScaleDimensions = new SizeF(96F, 96F);
-            ClientSize = new Size(404, 280);
-            FormBorderStyle = FormBorderStyle.FixedDialog;
-            if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
-            StartPosition = FormStartPosition.CenterParent;
-            MaximizeBox = MinimizeBox = false;
-            Font = new Font("Segoe UI", 9F);
+            AddLabel("Nombre de usuario", 0);  _name     = AddBox(0);
+            AddLabel("Nombre completo", 1);    _fullName = AddBox(1);
+            AddLabel("Contraseña", 2);         _pwd1     = AddBox(2, password: true);
+            AddLabel("Repetir contraseña", 3); _pwd2     = AddBox(3, password: true);
 
-            int y = 16;
-            Func<string, Label> lbl = t => new Label { Text = t, Left = 16, Top = y + 3, Width = 140 };
-            Func<bool, TextBox> box = pwd => new TextBox { Left = 160, Top = y, Width = 226, UseSystemPasswordChar = pwd };
-
-            var lName = lbl("Nombre de usuario"); _name = box(false); y += 32;
-            var lFull = lbl("Nombre completo");   _fullName = box(false); y += 32;
-            var lP1   = lbl("Contrasena");        _pwd1 = box(true); y += 32;
-            var lP2   = lbl("Repetir contrasena"); _pwd2 = box(true); y += 36;
-
-            _noPassword   = new CheckBox { Text = "Sin contrasena (inicio de sesion directo)", Left = 160, Top = y, AutoSize = true }; y += 26;
-            _admin        = new CheckBox { Text = "Administrador local", Left = 160, Top = y, AutoSize = true }; y += 26;
-            _neverExpires = new CheckBox { Text = "La contrasena nunca caduca", Left = 160, Top = y, AutoSize = true, Checked = true }; y += 36;
+            _noPassword   = AddCheck("Sin contraseña (inicio de sesión directo)", 4);
+            _admin        = AddCheck("Administrador local", 5);
+            _neverExpires = AddCheck("La contraseña nunca caduca", 6, chk: true);
+            _noPassword.Margin = new Padding(0, 8, 0, 2);
 
             _noPassword.CheckedChanged += (s, e) =>
             {
                 _pwd1.Enabled = _pwd2.Enabled = !_noPassword.Checked;
                 if (_noPassword.Checked) _pwd1.Text = _pwd2.Text = "";
             };
+        }
 
-            var ok = new Button { Text = "Crear", Left = 210, Top = y, Width = 85 };
-            var cancel = new Button { Text = "Cancelar", Left = 301, Top = y, Width = 85, DialogResult = DialogResult.Cancel };
-            ok.Click += (s, e) =>
+        protected override bool ValidateInput()
+        {
+            if (UserName.Length == 0)
             {
-                if (UserName.Length == 0)
-                {
-                    MessageBox.Show(this, "Indica el nombre de usuario.", "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (!NoPassword && _pwd1.Text.Length == 0)
-                {
-                    MessageBox.Show(this, "Indica una contrasena o marca 'Sin contrasena'.", "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                if (_pwd1.Text != _pwd2.Text)
-                {
-                    MessageBox.Show(this, "Las contrasenas no coinciden.", "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
-                }
-                DialogResult = DialogResult.OK;
-            };
-
-            Controls.AddRange(new Control[] { lName, _name, lFull, _fullName, lP1, _pwd1, lP2, _pwd2,
-                                              _noPassword, _admin, _neverExpires, ok, cancel });
-            AcceptButton = ok;
-            CancelButton = cancel;
+                Dialogs.Warn(this, "Nuevo usuario", "Indica el nombre de usuario.");
+                return false;
+            }
+            if (!NoPassword && _pwd1.Text.Length == 0)
+            {
+                Dialogs.Warn(this, "Nuevo usuario", "Indica una contraseña o marca 'Sin contraseña'.");
+                return false;
+            }
+            if (_pwd1.Text != _pwd2.Text)
+            {
+                Dialogs.Warn(this, "Nuevo usuario", "Las contraseñas no coinciden.");
+                return false;
+            }
+            return true;
         }
     }
 }

@@ -28,11 +28,34 @@ namespace Toolkit.App
     {
         private Runspace _runspace;
         private bool _modulesLoaded;
+        // Pipeline en curso, para poder pararlo desde la GUI (boton Cancelar).
+        private PowerShell _current;
+        private readonly object _currentLock = new object();
+
+        /// <summary>Codigo que devuelve Run cuando el tecnico cancela desde la GUI.</summary>
+        public const int ExitCancelled = -2;
 
         /// <summary>Tiempo limite global de una ejecucion completa.</summary>
         public int TimeoutMinutes { get; set; } = 90;   // dos instaladores grandes (descarga + instalacion) caben de sobra
 
         public event EventHandler<ScriptOutputEventArgs> Output;
+
+        /// <summary>
+        /// Para el pipeline en curso (si lo hay). Es asincrono: el hilo que espera
+        /// en Run/Invoke recibe PipelineStoppedException y sale por su cauce normal.
+        /// </summary>
+        public void Cancel()
+        {
+            PowerShell ps;
+            lock (_currentLock) ps = _current;
+            if (ps == null) return;
+            try { ps.BeginStop(null, null); } catch { }
+        }
+
+        private void SetCurrent(PowerShell ps)
+        {
+            lock (_currentLock) _current = ps;
+        }
 
         private void Emit(LogLevel level, string text)
         {
@@ -101,6 +124,29 @@ namespace Toolkit.App
             if (_runspace == null) Open();
             LoadModules();
 
+            try
+            {
+                return RunCore(options);
+            }
+            finally
+            {
+                // El runspace se reutiliza entre ejecuciones (GUI): una auditoria
+                // (-ReportOnly) no puede dejar el modo "solo reporte" pegado a las
+                // acciones de Soporte/Usuarios que vengan despues.
+                try
+                {
+                    using (var reset = PowerShell.Create())
+                    {
+                        reset.Runspace = _runspace;
+                        reset.AddScript("Set-ToolkitMode").Invoke();
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private int RunCore(RunOptions options)
+        {
             using (var ps = PowerShell.Create())
             {
                 ps.Runspace = _runspace;
@@ -124,6 +170,7 @@ namespace Toolkit.App
                 if (options.IgnoreMaintenanceWindow) ps.AddParameter("IgnoreMaintenanceWindow", true);
 
                 PSDataCollection<PSObject> results;
+                SetCurrent(ps);
                 try
                 {
                     // Tiempo limite global. Sin esto, un instalador de terceros que
@@ -139,11 +186,17 @@ namespace Toolkit.App
                     }
                     results = ps.EndInvoke(async);
                 }
+                catch (PipelineStoppedException)
+                {
+                    Emit(LogLevel.Warn, "Cancelado por el tecnico.");
+                    return ExitCancelled;
+                }
                 catch (Exception ex)
                 {
                     Emit(LogLevel.Error, "Error ejecutando el orquestador: " + ex.Message);
                     return 1;
                 }
+                finally { SetCurrent(null); }
 
                 foreach (var r in results)
                 {
@@ -176,7 +229,9 @@ namespace Toolkit.App
                 ps.AddScript(script);
                 if (parameters != null)
                     foreach (var kv in parameters) ps.AddParameter(kv.Key, kv.Value);
-                return ps.Invoke();
+                SetCurrent(ps);
+                try { return ps.Invoke(); }
+                finally { SetCurrent(null); }
             }
         }
 
@@ -224,6 +279,19 @@ namespace Toolkit.App
         {
             if (_runspace != null)
             {
+                if (_modulesLoaded)
+                {
+                    // Suelta el archivo de log (Write-Log lo mantiene abierto).
+                    try
+                    {
+                        using (var ps = PowerShell.Create())
+                        {
+                            ps.Runspace = _runspace;
+                            ps.AddScript("Close-LogWriter").Invoke();
+                        }
+                    }
+                    catch { }
+                }
                 try { _runspace.Close(); } catch { }
                 _runspace.Dispose();
                 _runspace = null;

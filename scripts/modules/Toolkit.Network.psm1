@@ -206,13 +206,19 @@ function Get-ActiveAdapter {
     param()
 
     try {
-        $nic = Get-NetAdapter -Physical -ErrorAction Stop |
-               Where-Object { $_.Status -eq 'Up' } |
-               Sort-Object -Property LinkSpeed -Descending |
-               Select-Object -First 1
+        # Get-PhysicalAdapter (Core) en vez de Get-NetAdapter: evita cargar el modulo CDXML (2-3 s).
+        $adapters = Get-PhysicalAdapter
+        if ($null -eq $adapters) { return $null }
+        $gwRoute = Get-DefaultGateway
+        # Preferir el adaptador por el que sale la ruta por defecto; si no, el mas rapido de los conectados.
+        $nic = $null
+        if ($gwRoute) { $nic = $adapters | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceIndex -eq $gwRoute.InterfaceIndex } | Select-Object -First 1 }
+        if (-not $nic) {
+            $nic = $adapters | Where-Object { $_.Status -eq 'Up' } | Sort-Object -Property LinkSpeedBps -Descending | Select-Object -First 1
+        }
         if (-not $nic) { return $null }
 
-        $isWifi  = ($nic.InterfaceDescription -match 'Wi-?Fi|Wireless|802\.11' -or $nic.MediaType -match '802\.11')
+        $isWifi  = $nic.IsWireless
         $signal  = $null
         if ($isWifi) {
             try {
@@ -222,13 +228,18 @@ function Get-ActiveAdapter {
             } catch { }
         }
 
-        $gw = $null
-        try { $gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop | Select-Object -First 1).NextHop } catch { }
+        $gw = $(if ($gwRoute) { $gwRoute.NextHop } else { $null })
+
+        $bps = $nic.LinkSpeedBps
+        $linkSpeed = if ($bps -ge 1000000000) { '{0:0.#} Gbps' -f ($bps / 1e9) }
+                     elseif ($bps -ge 1000000) { '{0:0} Mbps'  -f ($bps / 1e6) }
+                     elseif ($bps -gt 0)       { '{0:0} Kbps'  -f ($bps / 1e3) }
+                     else                      { 'desconocido' }
 
         return [pscustomobject]@{
             Name         = $nic.Name
-            Description  = $nic.InterfaceDescription
-            LinkSpeed    = $nic.LinkSpeed
+            Description  = $nic.Description
+            LinkSpeed    = $linkSpeed
             IsWireless   = $isWifi
             SignalPct    = $signal
             Gateway      = $gw

@@ -280,7 +280,8 @@ function Get-RecentErrors {
     $events = @()
     foreach ($log in 'System', 'Application') {
         try {
-            $events += @(Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 1, 2; StartTime = $since } -ErrorAction Stop |
+            # -MaxEvents: un equipo con un servicio en bucle genera miles de errores por hora; con 1000 sobra para agrupar por origen.
+            $events += @(Get-WinEvent -FilterHashtable @{ LogName = $log; Level = 1, 2; StartTime = $since } -MaxEvents 1000 -ErrorAction Stop |
                          Select-Object TimeCreated, LogName, ProviderName, Id, LevelDisplayName, Message)
         } catch { }   # sin eventos = Get-WinEvent lanza excepcion; no es un error
     }

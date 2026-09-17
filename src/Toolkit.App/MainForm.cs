@@ -9,15 +9,15 @@ using System.Windows.Forms;
 namespace Toolkit.App
 {
     /// <summary>
-    /// Interfaz para el tecnico en sitio. Misma logica que el modo desatendido:
+    /// Interfaz para el técnico en sitio. Misma lógica que el modo desatendido:
     /// por debajo llama al mismo Invoke-ToolkitRun.ps1 embebido, de modo que
     /// GUI y despliegue masivo no pueden divergir.
     ///
-    /// Cada modulo tiene su propia pestana (Ubicacion, Aplicaciones, Red,
-    /// Usuarios) con sus opciones y sus botones: el tecnico ejecuta una cosa
-    /// cada vez y ve en el log de abajo solo lo que pidio.
+    /// Cada módulo tiene su propia página (Ubicación, Aplicaciones, Red, Soporte,
+    /// Usuarios) con sus opciones y sus botones: el técnico ejecuta una cosa
+    /// cada vez y ve en la salida de abajo solo lo que pidió.
     ///
-    /// La pestana "Usuarios" es la excepcion deliberada: cambiar contrasenas o
+    /// La página "Usuarios" es la excepción deliberada: cambiar contraseñas o
     /// borrar cuentas es interactivo por naturaleza y no se despliega en masa.
     /// Llama directamente a las funciones de Toolkit.Users.psm1.
     /// </summary>
@@ -26,30 +26,54 @@ namespace Toolkit.App
         private readonly CommandLineArgs _args;
 
         private RichTextBox _log;
-        private Label _status;
+        private Label _status, _elapsed;
+        private PictureBox _statusIcon;
+        private Button _btnCancel;
         private ProgressBar _progress;
-        private TabControl _tabs;
-        private TabPage _tabApps, _tabUsers;
+        private SplitContainer _split;
+        private Timer _clock;
+        private DateTime _busySince;
+        private bool _busy;
 
-        // Botones que lanzan una ejecucion; se bloquean todos mientras hay una en curso.
+        // Navegación: una fila de botones arriba y una página visible cada vez.
+        private FlowLayoutPanel _nav;
+        private Panel _content;
+        private readonly List<Button> _navButtons = new List<Button>();
+        private readonly List<Panel> _pages = new List<Panel>();
+        private int _pageApps = -1, _pageUsers = -1;
+
+        // Botones que lanzan una ejecución; se bloquean todos mientras hay una en curso.
         private readonly List<Button> _actionButtons = new List<Button>();
 
-        // Pestana Ubicacion
+        // Página Ubicación
         private CheckBox _chkLockDown, _chkBrowsers, _chkGetPosition;
 
-        // Pestana Aplicaciones
+        // Página Aplicaciones
         private CheckedListBox _apps;
         private Label _appsHint;
         private bool _appsLoaded;
 
-        // Pestana Red
+        // Página Red
         private NumericUpDown _pingCount;
 
-        // Pestana Usuarios
+        // Página Usuarios
         private ListView _users;
         private Button _btnUsersRefresh, _btnUserNew, _btnUserPwd, _btnUserNoPwd, _btnUserToggle, _btnUserDelete;
-        private ScriptHost _sharedHost;
         private bool _usersLoaded;
+
+        // Runspace único para toda la ventana. Se abre en segundo plano nada más
+        // mostrarse el formulario (ver Load) para que el primer clic no pague el
+        // arranque (runspace + 6 módulos + Initialize-Toolkit: 1.5-2.5 s).
+        private Task<ScriptHost> _hostTask;
+        private readonly object _hostLock = new object();
+
+        // Log de la GUI por lotes: los scripts emiten cientos de líneas seguidas y
+        // repintar el RichTextBox una a una (BeginInvoke + AppendText + ScrollToCaret)
+        // congela la ventana. Se encolan y se vuelcan de una vez en el hilo de la UI.
+        private readonly Queue<KeyValuePair<LogLevel, string>> _pendingLog = new Queue<KeyValuePair<LogLevel, string>>();
+        private int _flushScheduled;
+
+        private const string PrepMessage = "Preparando módulos...";
 
         private sealed class UserRow
         {
@@ -61,197 +85,439 @@ namespace Toolkit.App
         {
             _args = args;
             BuildUi();
-            FormClosed += (s, e) => { if (_sharedHost != null) _sharedHost.Dispose(); };
+            WindowPlacement.Restore(this, _split);
+            FormClosing += (s, e) => WindowPlacement.Save(this, _split);
+            FormClosed += (s, e) =>
+            {
+                Task<ScriptHost> t;
+                lock (_hostLock) t = _hostTask;
+                if (t != null && t.Status == TaskStatus.RanToCompletion)
+                {
+                    try { t.Result.Dispose(); } catch { }
+                }
+            };
         }
 
         private void BuildUi()
         {
-            // Escalado DPI: el manifiesto declara la app PerMonitorV2, asi que Windows
-            // NO la estira. Sin esto, al 125 %/150 % el texto crece y los controles no,
-            // y se pisan. Todas las medidas de este archivo son a 96 ppp.
+            // Escalado DPI: el manifiesto declara la app PerMonitorV2, así que Windows
+            // NO la estira. Todas las medidas de este archivo son a 96 ppp y WinForms
+            // las multiplica al 125 %/150 %... PERO solo si el layout está suspendido
+            // cuando se asigna AutoScaleDimensions: si no, escala en ese instante (con
+            // el formulario vacío) y los controles que se añaden después se quedan a
+            // 96 ppp con el texto grande. Es el mismo patrón que genera el diseñador:
+            // SuspendLayout -> construir -> ResumeLayout + PerformLayout.
+            SuspendLayout();
             AutoScaleMode = AutoScaleMode.Dpi;
             AutoScaleDimensions = new SizeF(96F, 96F);
 
-            Text = "Toolkit BPO";
+            Text = Program.AppName;
             if (EmbeddedScripts.AppIcon != null) Icon = EmbeddedScripts.AppIcon;
-            Font = new Font("Segoe UI", 9F);
-            BackColor = Color.FromArgb(243, 243, 243);
+            Font = Theme.Body;
+            BackColor = Theme.Window;
             StartPosition = FormStartPosition.CenterScreen;
-            MinimumSize = new Size(640, 480);
+            MinimumSize = new Size(760, 540);
 
-            // Tamano inicial: el preferido, pero nunca mas grande que la pantalla
-            // (portatiles de 1366x768 con la barra de tareas, monitores pequenos...).
+            // Orden de dock (se procesa del último al primero): barra de estado abajo,
+            // progreso justo encima, cabecera arriba y el resto para el cuerpo.
+            var split = BuildSplit(); var header = BuildHeader(); var status = BuildStatusBar();
+            Controls.AddRange(new Control[] { split, header, _progress, status });
+
+            ResumeLayout(false);
+            PerformLayout();   // aquí se escala todo a la vez
+
+            // Tamaño inicial (ya en píxeles de dispositivo): el preferido, pero nunca
+            // más grande que la pantalla (portátiles de 1366x768 con la barra de
+            // tareas, monitores pequeños...).
             var area = Screen.FromPoint(Cursor.Position).WorkingArea;
-            Size = new Size(Math.Min(940, area.Width - 40), Math.Min(720, area.Height - 40));
+            Size = new Size(Math.Min(Theme.Px(1000), area.Width - 40),
+                            Math.Min(Theme.Px(740),  area.Height - 40));
 
-            // Cabecera: logo de la empresa a la izquierda, equipo y usuario a la derecha.
-            // El icono de la app ya va en la barra de titulo; aqui no se repite. Fondo
-            // blanco porque el logo (texto negro sobre transparente) esta hecho para eso.
-            var header = new Panel { Dock = DockStyle.Top, Height = 56, BackColor = Color.White };
+            // La distancia del separador se fija cuando el formulario ya tiene su
+            // tamaño real (escalado DPI incluido); antes, WinForms la recorta.
+            Load += (s, e) =>
+            {
+                if (!WindowPlacement.HasSavedSplitter)
+                {
+                    // 420 px lógicos (cabe la página Soporte entera), pero nunca más del 62 % de la altura.
+                    var want = Math.Min(Theme.Px(420), (int)(_split.Height * 0.62));
+                    want = Math.Max(_split.Panel1MinSize, Math.Min(want, _split.Height - _split.Panel2MinSize - _split.SplitterWidth));
+                    try { _split.SplitterDistance = want; } catch (ArgumentException) { }
+                }
+                SelectPage(0);
+                WarmUpHost();
+            };
+
+            Append(LogLevel.Info,  Program.AppName + " v" + Program.AppVersion() + " — los scripts van embebidos en este ejecutable.");
+            Append(LogLevel.Debug, "Auditar evalúa el equipo sin modificar nada. Empieza siempre por ahí.");
+        }
+
+        // -------------------------------------------------------------------
+        //  Cabecera: logo de la empresa, equipo/usuario y "Acerca de"
+        // -------------------------------------------------------------------
+        private Control BuildHeader()
+        {
+            // Fondo blanco porque el logo (texto negro sobre transparente) está hecho para eso.
+            var header = new Panel { Dock = DockStyle.Top, Height = 58, BackColor = Theme.Surface };
             var logo = new PictureBox
             {
                 Dock = DockStyle.Left, SizeMode = PictureBoxSizeMode.Zoom,
-                Margin = new Padding(0), Padding = new Padding(14, 6, 0, 6)
+                Margin = new Padding(0), Padding = new Padding(16, 8, 0, 8), Cursor = Cursors.Hand
             };
             var img = EmbeddedScripts.CompanyLogo;
             if (img != null)
             {
                 logo.Image = img;
-                // Ancho proporcional a la altura de la cabecera (menos el padding).
-                logo.Width = (int)Math.Round(img.Width * (header.Height - 12) / (double)img.Height) + logo.Padding.Horizontal;
+                logo.Width = (int)Math.Round(img.Width * (header.Height - 16) / (double)img.Height) + logo.Padding.Horizontal;
             }
-            else
-            {
-                logo.Width = 0;
-            }
-            // "Acerca de" a la derecha del todo; el logo tambien lo abre.
-            var about = new LinkLabel
-            {
-                Text = "Acerca de", Dock = DockStyle.Right, AutoSize = false, Width = 84,
-                TextAlign = ContentAlignment.MiddleCenter,
-                LinkColor = Color.FromArgb(32, 45, 66), ActiveLinkColor = Color.FromArgb(0, 90, 150),
-                VisitedLinkColor = Color.FromArgb(32, 45, 66), LinkBehavior = LinkBehavior.HoverUnderline,
-                Font = new Font("Segoe UI", 9F)
-            };
-            about.LinkClicked += (s, e) => ShowAbout();
-            logo.Cursor = Cursors.Hand;
-            logo.Click  += (s, e) => ShowAbout();
+            else logo.Width = 0;
+            logo.Click += (s, e) => ShowAbout();
+
+            var about = Theme.MakeButton("Acerca de", Theme.ButtonKind.Secondary, Theme.GlyphInfo);
+            about.FlatAppearance.BorderSize = 0;
+            about.BackColor = Theme.Surface;
+            about.Dock = DockStyle.Right;
+            about.AutoSize = false;
+            about.Width = 118;
+            about.Margin = new Padding(0);
+            about.Click += (s, e) => ShowAbout();
 
             var machine = new Label
             {
                 Text = Environment.MachineName + "   ·   " + Environment.UserName + "   ·   v" + Program.AppVersion(),
                 Dock = DockStyle.Fill, AutoEllipsis = true,
                 TextAlign = ContentAlignment.MiddleRight,
-                Padding = new Padding(8, 0, 8, 0),
-                Font = new Font("Segoe UI", 9.5F),
-                ForeColor = Color.FromArgb(90, 100, 115)
+                Padding = new Padding(8, 0, 12, 0),
+                Font = Theme.Body, ForeColor = Theme.TextMuted
             };
-            // Linea fina bajo la cabecera para separarla del contenido gris.
-            var rule = new Panel { Dock = DockStyle.Bottom, Height = 1, BackColor = Color.FromArgb(215, 215, 215) };
-            header.Controls.AddRange(new Control[] { machine, about, logo, rule });
-
-            _tabs = new TabControl { Dock = DockStyle.Fill };
-            _tabApps  = BuildAppsTab();
-            _tabUsers = BuildUsersTab();
-            _tabs.TabPages.Add(BuildLocationTab());
-            _tabs.TabPages.Add(_tabApps);
-            _tabs.TabPages.Add(BuildNetworkTab());
-            _tabs.TabPages.Add(BuildSupportTab());
-            _tabs.TabPages.Add(_tabUsers);
-            // Las listas se cargan la primera vez que se abre la pestana: abrir un
-            // runspace cuesta un segundo y no tiene sentido pagarlo al arrancar.
-            _tabs.SelectedIndexChanged += async (s, e) =>
-            {
-                if (_tabs.SelectedTab == _tabUsers && !_usersLoaded) await RefreshUsers();
-                if (_tabs.SelectedTab == _tabApps  && !_appsLoaded)  await RefreshApps();
-            };
-
-            _log = new RichTextBox
-            {
-                Dock = DockStyle.Fill,
-                ReadOnly = true,
-                BackColor = Color.FromArgb(24, 24, 24),
-                ForeColor = Color.Gainsboro,
-                Font = new Font("Consolas", 8.75F),
-                BorderStyle = BorderStyle.None,
-                WordWrap = false,
-                ScrollBars = RichTextBoxScrollBars.Both
-            };
-            var logHost = new Panel { Dock = DockStyle.Fill, Padding = new Padding(16, 0, 16, 8) };
-            logHost.Controls.Add(_log);
-
-            // Arriba las pestanas, abajo el log. El separador se arrastra con el raton;
-            // se hace mas ancho que el de serie (4 px) para que se pueda coger.
-            // Panel1 es el fijo: al agrandar la ventana, el espacio extra va al log.
-            var split = new SplitContainer
-            {
-                Dock = DockStyle.Fill,
-                Orientation = Orientation.Horizontal,
-                FixedPanel = FixedPanel.Panel1,
-                SplitterWidth = 8,
-                Panel1MinSize = 120,
-                Panel2MinSize = 80,
-                BackColor = Color.FromArgb(225, 225, 225)
-            };
-            split.Panel1.BackColor = split.Panel2.BackColor = BackColor;
-            split.Panel1.Padding = new Padding(16, 8, 16, 0);
-            split.Panel1.Controls.Add(_tabs);
-            split.Panel2.Controls.Add(logHost);
-            // Pista visual de que el separador se puede arrastrar.
-            split.Paint += (s, e) =>
-            {
-                var r = split.SplitterRectangle;
-                using (var pen = new Pen(Color.FromArgb(160, 160, 160)))
-                {
-                    int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
-                    e.Graphics.DrawLine(pen, cx - 16, cy, cx + 16, cy);
-                }
-            };
-
-            _progress = new ProgressBar { Dock = DockStyle.Bottom, Height = 4, Style = ProgressBarStyle.Marquee, Visible = false };
-            _status = new Label
-            {
-                Dock = DockStyle.Bottom,
-                Height = 26,
-                AutoEllipsis = true,
-                TextAlign = ContentAlignment.MiddleLeft,
-                Padding = new Padding(16, 0, 0, 0),
-                ForeColor = Color.DimGray,
-                Text = "Listo."
-            };
-
-            Controls.AddRange(new Control[] { split, header, _progress, _status });
-
-            // La distancia del separador se fija cuando el formulario ya tiene su
-            // tamano real (escalado DPI incluido); antes, WinForms la recorta.
-            Load += (s, e) =>
-            {
-                // 350 px logicos (cabe la pestana Soporte entera), pero nunca mas del 60 % de la altura.
-                var want = Math.Min(LogicalToDeviceUnits(350), (int)(split.Height * 0.6));
-                want = Math.Max(split.Panel1MinSize, Math.Min(want, split.Height - split.Panel2MinSize - split.SplitterWidth));
-                try { split.SplitterDistance = want; } catch (ArgumentException) { }
-            };
-
-            Append(LogLevel.Info,  "Toolkit BPO v" + Program.AppVersion() + " — los scripts van embebidos en este ejecutable.");
-            Append(LogLevel.Debug, "Auditar evalua el equipo sin modificar nada. Empieza siempre por ahi.");
+            header.Controls.AddRange(new Control[] { machine, about, logo, Theme.Rule(DockStyle.Bottom) });
+            return header;
         }
 
         // -------------------------------------------------------------------
-        //  Pestana Ubicacion
+        //  Cuerpo: páginas arriba, salida abajo, separador arrastrable
         // -------------------------------------------------------------------
-        private TabPage BuildLocationTab()
+        private Control BuildSplit()
         {
-            var tab = NewTab("Ubicacion");
+            // --- Panel superior: tarjeta blanca con la navegación y la página activa ---
+            _nav = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Top, Height = 46, BackColor = Theme.Surface,
+                Padding = new Padding(8, 4, 8, 0), WrapContents = false
+            };
+            // Subrayado de acento bajo el botón de la página activa.
+            _nav.Paint += (s, e) =>
+            {
+                var sel = _navButtons.FirstOrDefault(b => b.Tag is bool && (bool)b.Tag);
+                if (sel == null) return;
+                using (var br = new SolidBrush(Theme.Accent))
+                    e.Graphics.FillRectangle(br, sel.Left + Theme.Px(8), _nav.Height - Theme.Px(3), sel.Width - Theme.Px(16), Theme.Px(3));
+            };
+            _content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface };
+
+            AddPage("Ubicación",    Theme.GlyphLocation, BuildLocationPage());
+            _pageApps  = AddPage("Aplicaciones", Theme.GlyphApps, BuildAppsPage());
+            AddPage("Red",          Theme.GlyphNetwork,  BuildNetworkPage());
+            AddPage("Soporte",      Theme.GlyphSupport,  BuildSupportPage());
+            _pageUsers = AddPage("Usuarios", Theme.GlyphUsers, BuildUsersPage());
+
+            var card = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(1) };
+            card.Paint += (s, e) => ControlPaint.DrawBorder(e.Graphics, card.ClientRectangle, Theme.Border, ButtonBorderStyle.Solid);
+            card.Controls.Add(_content);
+            card.Controls.Add(Theme.Rule(DockStyle.Top));
+            card.Controls.Add(_nav);
+
+            // --- Panel inferior: cabecera "Salida" con sus botones y el log ---
+            _log = new RichTextBox
+            {
+                Dock = DockStyle.Fill, ReadOnly = true,
+                BackColor = Theme.LogBack, ForeColor = Theme.LogText,
+                Font = Theme.Mono, BorderStyle = BorderStyle.None,
+                WordWrap = false, ScrollBars = RichTextBoxScrollBars.Both,
+                DetectUrls = false
+            };
+            var logPad = new Panel { Dock = DockStyle.Fill, BackColor = Theme.LogBack, Padding = new Padding(10, 8, 4, 6) };
+            logPad.Controls.Add(_log);
+
+            var logHead = new Panel { Dock = DockStyle.Top, Height = 36, BackColor = Theme.Surface };
+            var logTitle = new Label
+            {
+                Text = "Salida", Dock = DockStyle.Left, Width = 90, Font = Theme.Section, ForeColor = Theme.Text,
+                TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(12, 0, 0, 0)
+            };
+            var logTools = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Right, FlowDirection = FlowDirection.RightToLeft, AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(0, 4, 6, 0), WrapContents = false
+            };
+            var bLogs  = SmallTool("Abrir carpeta de logs", Theme.GlyphFolder);
+            var bClear = SmallTool("Limpiar", Theme.GlyphClear);
+            var bCopy  = SmallTool("Copiar", Theme.GlyphCopy);
+            bCopy.Click += (s, e) =>
+            {
+                try { Clipboard.SetText(_log.Text); SetStatus(StatusKind.Info, "Salida copiada al portapapeles."); }
+                catch (Exception ex) { SetStatus(StatusKind.Error, "No se pudo copiar: " + ex.Message); }
+            };
+            bClear.Click += (s, e) => _log.Clear();
+            bLogs.Click += (s, e) =>
+            {
+                var dir = System.IO.Path.Combine(_args.Root, "logs");
+                try { System.Diagnostics.Process.Start("explorer.exe", System.IO.Directory.Exists(dir) ? dir : _args.Root); } catch { }
+            };
+            logTools.Controls.AddRange(new Control[] { bLogs, bClear, bCopy });
+            logHead.Controls.AddRange(new Control[] { logTitle, logTools });
+
+            var logCard = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(1) };
+            logCard.Paint += (s, e) => ControlPaint.DrawBorder(e.Graphics, logCard.ClientRectangle, Theme.Border, ButtonBorderStyle.Solid);
+            logCard.Controls.Add(logPad);
+            logCard.Controls.Add(logHead);
+
+            // Panel1 es el fijo: al agrandar la ventana, el espacio extra va al log.
+            _split = new SplitContainer
+            {
+                Dock = DockStyle.Fill, Orientation = Orientation.Horizontal,
+                FixedPanel = FixedPanel.Panel1, SplitterWidth = 10,
+                Panel1MinSize = Theme.Px(160), Panel2MinSize = Theme.Px(100), BackColor = Theme.Window
+            };
+            _split.Panel1.Padding = new Padding(16, 12, 16, 0);
+            _split.Panel2.Padding = new Padding(16, 0, 16, 12);
+            _split.Panel1.Controls.Add(card);
+            _split.Panel2.Controls.Add(logCard);
+            // Pista visual de que el separador se puede arrastrar.
+            _split.Paint += (s, e) =>
+            {
+                var r = _split.SplitterRectangle;
+                using (var pen = new Pen(Theme.Border, 2))
+                {
+                    int cx = r.Left + r.Width / 2, cy = r.Top + r.Height / 2;
+                    e.Graphics.DrawLine(pen, cx - Theme.Px(18), cy, cx + Theme.Px(18), cy);
+                }
+            };
+            return _split;
+        }
+
+        /// <summary>Botón discreto de la cabecera del log (sin borde, se ilumina al pasar).</summary>
+        private static Button SmallTool(string text, string glyph)
+        {
+            var b = Theme.MakeButton(text, Theme.ButtonKind.Secondary, glyph);
+            b.FlatAppearance.BorderSize = 0;
+            b.Font = Theme.Small;
+            b.MinimumSize = new Size(0, 28);
+            b.Margin = new Padding(4, 0, 0, 0);
+            return b;
+        }
+
+        private int AddPage(string title, string glyph, Panel page)
+        {
+            int index = _pages.Count;
+            var b = new Button
+            {
+                Text = title, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                FlatStyle = FlatStyle.Flat, BackColor = Theme.Surface, ForeColor = Theme.TextMuted,
+                Font = Theme.Body, Padding = new Padding(8, 0, 10, 0), Margin = new Padding(0, 0, 2, 0),
+                MinimumSize = new Size(0, 38), Cursor = Cursors.Hand, Tag = false,
+                Image = Theme.Glyph(glyph, Theme.TextMuted), ImageAlign = ContentAlignment.MiddleLeft,
+                TextImageRelation = TextImageRelation.ImageBeforeText, TextAlign = ContentAlignment.MiddleLeft,
+                UseVisualStyleBackColor = false
+            };
+            b.FlatAppearance.BorderSize = 0;
+            b.FlatAppearance.MouseOverBackColor = Theme.Hover;
+            b.FlatAppearance.MouseDownBackColor = Theme.Hover;
+            b.Click += (s, e) => SelectPage(index);
+            _navButtons.Add(b);
+            _nav.Controls.Add(b);
+
+            page.Dock = DockStyle.Fill;
+            page.Visible = false;
+            _pages.Add(page);
+            _content.Controls.Add(page);
+            return index;
+        }
+
+        private readonly string[] _pageGlyphs = { Theme.GlyphLocation, Theme.GlyphApps, Theme.GlyphNetwork, Theme.GlyphSupport, Theme.GlyphUsers };
+
+        private async void SelectPage(int index)
+        {
+            for (int i = 0; i < _pages.Count; i++)
+            {
+                bool on = i == index;
+                _pages[i].Visible = on;
+                var b = _navButtons[i];
+                b.Tag = on;
+                b.ForeColor = on ? Theme.Accent : Theme.TextMuted;
+                b.Font = on ? Theme.BodyBold : Theme.Body;
+                b.Image = Theme.Glyph(_pageGlyphs[i], on ? Theme.Accent : Theme.TextMuted);
+            }
+            _nav.Invalidate();
+
+            // Las listas se cargan la primera vez que se abre la página: no tiene
+            // sentido pagarlo al arrancar. Con algo en curso no se lanza otra
+            // ejecución sobre el mismo runspace; se cargará al volver a la página.
+            if (_busy) return;
+            if (index == _pageUsers && !_usersLoaded) await RefreshUsers();
+            if (index == _pageApps  && !_appsLoaded)  await RefreshApps();
+        }
+
+        // -------------------------------------------------------------------
+        //  Barra de estado: icono, texto, tiempo transcurrido y Cancelar
+        // -------------------------------------------------------------------
+        private Control BuildStatusBar()
+        {
+            var bar = new Panel { Dock = DockStyle.Bottom, Height = 42, BackColor = Theme.Window };
+            _statusIcon = new PictureBox
+            {
+                Dock = DockStyle.Left, Width = 34, SizeMode = PictureBoxSizeMode.CenterImage,
+                Padding = new Padding(16, 0, 0, 0)
+            };
+            _status = new Label
+            {
+                Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Theme.Text, Font = Theme.Body, Padding = new Padding(4, 0, 0, 0)
+            };
+            _elapsed = new Label
+            {
+                Dock = DockStyle.Right, Width = 60, TextAlign = ContentAlignment.MiddleRight,
+                ForeColor = Theme.TextMuted, Font = Theme.Mono, Visible = false
+            };
+            _btnCancel = Theme.MakeButton("Cancelar", Theme.ButtonKind.Danger, Theme.GlyphStop);
+            _btnCancel.Dock = DockStyle.Right;
+            _btnCancel.AutoSize = false;
+            _btnCancel.Width = 112;
+            _btnCancel.Margin = new Padding(0);
+            _btnCancel.Visible = false;
+            _btnCancel.Click += (s, e) => CancelCurrent();
+            var cancelHost = new Panel { Dock = DockStyle.Right, Width = 112 + 16, Padding = new Padding(8, 4, 16, 4) };
+            cancelHost.Controls.Add(_btnCancel);
+
+            bar.Controls.AddRange(new Control[] { _status, _statusIcon, _elapsed, cancelHost, Theme.Rule(DockStyle.Top) });
+
+            _progress = new ProgressBar { Dock = DockStyle.Bottom, Height = 3, Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 25, Visible = false };
+
+            _clock = new Timer { Interval = 1000 };
+            _clock.Tick += (s, e) => _elapsed.Text = (DateTime.Now - _busySince).ToString(@"m\:ss");
+
+            SetStatus(StatusKind.Info, "Listo.");
+            return bar;
+        }
+
+        private enum StatusKind { Info, Ok, Busy, Warn, Error }
+
+        private void SetStatus(StatusKind kind, string text)
+        {
+            string glyph; Color color;
+            switch (kind)
+            {
+                case StatusKind.Ok:    glyph = Theme.GlyphOk;      color = Theme.Ok;     break;
+                case StatusKind.Busy:  glyph = Theme.GlyphClock;   color = Theme.Accent; break;
+                case StatusKind.Warn:  glyph = Theme.GlyphWarning; color = Theme.Warn;   break;
+                case StatusKind.Error: glyph = Theme.GlyphError;   color = Theme.Danger; break;
+                default:               glyph = Theme.GlyphInfo;    color = Theme.Accent; break;
+            }
+            _statusIcon.Image = Theme.Glyph(glyph, color, 18);
+            _status.Text = text;
+        }
+
+        /// <summary>
+        /// Arranca el runspace compartido en segundo plano mientras el técnico mira
+        /// la ventana. Los botones siguen activos: si pulsa uno antes de que termine,
+        /// SharedHost() simplemente espera a que acabe (en el hilo de trabajo).
+        /// </summary>
+        private async void WarmUpHost()
+        {
+            SetStatus(StatusKind.Busy, PrepMessage);
+            _progress.Visible = true;
+            string error = null;
+            try { await StartHost(); }
+            catch (Exception ex) { error = ex.Message; }
+            // Si mientras tanto ya hay una acción en marcha, no pisar su estado.
+            if (!_busy)
+            {
+                _progress.Visible = false;
+                if (error == null) SetStatus(StatusKind.Info, "Listo.");
+                else SetStatus(StatusKind.Error, "No se pudieron cargar los módulos: " + error);
+            }
+        }
+
+        private Task<ScriptHost> StartHost()
+        {
+            lock (_hostLock)
+            {
+                if (_hostTask == null || _hostTask.IsFaulted)
+                {
+                    _hostTask = Task.Run(() =>
+                    {
+                        var h = new ScriptHost();
+                        h.Output += (s, e) => Append(e.Level, e.Text);
+                        h.Open();
+                        h.Invoke("param($Root) Initialize-Toolkit -Root $Root",
+                            new Dictionary<string, object> { { "Root", _args.Root } });
+                        return h;
+                    });
+                }
+                return _hostTask;
+            }
+        }
+
+        /// <summary>
+        /// Runspace compartido por TODA la ventana: orquestador (Ubicación, Apps,
+        /// Red), Soporte y Usuarios. Se abre una vez (en segundo plano, al cargar
+        /// el formulario) y se reutiliza. Bloquea hasta que esté listo: llamar
+        /// siempre desde un hilo de trabajo (Task.Run), nunca desde el de la UI.
+        /// </summary>
+        private ScriptHost SharedHost()
+        {
+            return StartHost().GetAwaiter().GetResult();
+        }
+
+        private void CancelCurrent()
+        {
+            Task<ScriptHost> t;
+            lock (_hostLock) t = _hostTask;
+            if (t == null || t.Status != TaskStatus.RanToCompletion) return;
+            if (!Dialogs.Confirm(this, "Cancelar la operación",
+                "Se detendrá la operación en curso.\n\nSi estaba aplicando cambios, pueden quedar a medias: " +
+                "usa 'Auditar' para ver el estado y 'Revertir' si hace falta.",
+                "Detener ahora", danger: true, cancelText: "Seguir esperando")) return;
+            _btnCancel.Enabled = false;
+            SetStatus(StatusKind.Warn, "Cancelando...");
+            t.Result.Cancel();
+        }
+
+        // -------------------------------------------------------------------
+        //  Página Ubicación
+        // -------------------------------------------------------------------
+        private Panel BuildLocationPage()
+        {
+            var page = NewPage();
             var stack = NewStack();
 
-            stack.Controls.Add(NewHint(
-                "Activa la ubicacion de Windows (servicio, interruptor, consentimiento de todos los perfiles y politicas) " +
+            stack.Controls.Add(Theme.Hint(
+                "Activa la ubicación de Windows (servicio, interruptor, consentimiento de todos los perfiles y políticas) " +
                 "y da permiso a los navegadores para que Zoho pueda hacer el check-in. Se aplica sin reiniciar."));
 
-            _chkLockDown    = NewCheck("Impedir que el usuario desactive la ubicacion desde Configuracion (recomendado)", true);
-            _chkLockDown.ForeColor = Color.FromArgb(120, 60, 0);
-            _chkBrowsers    = NewCheck("Permitir la ubicacion en Chrome, Edge y Firefox sin preguntar (check-in de Zoho)", true);
-            _chkGetPosition = NewCheck("Obtener coordenadas reales al verificar (tarda hasta 20 s; util en el piloto)", false);
+            _chkLockDown    = Theme.Check("Impedir que el usuario desactive la ubicación desde Configuración (recomendado)", true);
+            _chkBrowsers    = Theme.Check("Permitir la ubicación en Chrome, Edge y Firefox sin preguntar (check-in de Zoho)", true);
+            _chkGetPosition = Theme.Check("Obtener coordenadas reales al verificar (tarda hasta 20 s; útil en el piloto)", false);
             stack.Controls.Add(_chkLockDown);
             stack.Controls.Add(_chkBrowsers);
             stack.Controls.Add(_chkGetPosition);
 
-            var activate = NewButton("ACTIVAR UBICACION",         Color.FromArgb(0, 120, 60),    Color.White);
-            var audit    = NewButton("Auditar  (no cambia nada)", Color.FromArgb(230, 230, 230), Color.Black);
-            var checkIn  = NewButton("Comprobar check-in Zoho",   Color.FromArgb(0, 90, 150),    Color.White);
-            var geoTest  = NewButton("Probar en el navegador",    Color.FromArgb(0, 90, 150),    Color.White);
-            var settings = NewButton("Ajustes de Windows",        Color.FromArgb(230, 230, 230), Color.Black);
-            var rollback = NewButton("Revertir",                  Color.FromArgb(150, 40, 40),   Color.White);
+            var activate = NewButton("Activar ubicación",       Theme.ButtonKind.Success,   Theme.GlyphLocation);
+            var audit    = NewButton("Auditar",                 Theme.ButtonKind.Secondary, Theme.GlyphSearch);
+            var checkIn  = NewButton("Comprobar check-in Zoho", Theme.ButtonKind.Primary,   Theme.GlyphCheck);
+            var geoTest  = NewButton("Probar en el navegador",  Theme.ButtonKind.Secondary, Theme.GlyphGlobe);
+            var settings = NewButton("Ajustes de Windows",      Theme.ButtonKind.Secondary, Theme.GlyphSettings);
+            var rollback = NewButton("Revertir",                Theme.ButtonKind.Danger,    Theme.GlyphUndo);
 
             var tip = new ToolTip();
             tip.SetToolTip(activate,
-                "Un solo clic: arranca el servicio de ubicacion, activa el interruptor, el consentimiento de todos los\n" +
-                "usuarios, las politicas y el permiso de los navegadores; despues comprueba que el check-in funciona.");
+                "Un solo clic: arranca el servicio de ubicación, activa el interruptor, el consentimiento de todos los\n" +
+                "usuarios, las políticas y el permiso de los navegadores; después comprueba que el check-in funciona.");
             tip.SetToolTip(audit,    "Muestra el estado actual sin modificar nada.");
-            tip.SetToolTip(checkIn,  "Recorre todo lo que necesita el check-in de Zoho y dice que falta. No modifica nada.");
+            tip.SetToolTip(checkIn,  "Recorre todo lo que necesita el check-in de Zoho y dice qué falta. No modifica nada.");
             tip.SetToolTip(rollback, "Deshace los cambios de registro que hizo el toolkit en este equipo.");
-            tip.SetToolTip(geoTest,  "Abre una pagina local que pide la ubicacion igual que Zoho y muestra coordenadas, precision o el error exacto.");
-            tip.SetToolTip(settings, "Abre Configuracion > Privacidad > Ubicacion de Windows (ahi se fija la ubicacion predeterminada).");
+            tip.SetToolTip(geoTest,  "Abre una página local que pide la ubicación igual que Zoho y muestra coordenadas, precisión o el error exacto.");
+            tip.SetToolTip(settings, "Abre Configuración > Privacidad > Ubicación de Windows (ahí se fija la ubicación predeterminada).");
 
             activate.Click += (s, e) => ActivateLocation();
             audit.Click    += async (s, e) => await Execute("location", reportOnly: true);
@@ -259,37 +525,35 @@ namespace Toolkit.App
             geoTest.Click  += async (s, e) => await RunSupport("Prueba en el navegador",
                 "param($Root) Open-BrowserGeoTest -Root $Root | Out-Null",
                 parameters: new Dictionary<string, object> { { "Root", _args.Root } });
-            settings.Click += async (s, e) => await RunSupport("Ajustes de ubicacion", "Open-LocationSettings");
+            settings.Click += async (s, e) => await RunSupport("Ajustes de ubicación", "Open-LocationSettings");
             rollback.Click += (s, e) => Rollback();
 
-            stack.Controls.Add(NewButtonRow(activate, audit, checkIn, geoTest, settings, rollback));
+            stack.Controls.Add(NewButtonRow(activate, checkIn, audit, geoTest, settings, rollback));
 
-            tab.Controls.Add(stack);
-            return tab;
+            page.Controls.Add(stack);
+            return page;
         }
 
         // -------------------------------------------------------------------
-        //  Pestana Aplicaciones
+        //  Página Aplicaciones
         // -------------------------------------------------------------------
-        private TabPage BuildAppsTab()
+        private Panel BuildAppsPage()
         {
-            var tab = NewTab("Aplicaciones");
-            tab.AutoScroll = false;
+            var page = NewPage();
+            page.AutoScroll = false;
 
-            _appsHint = NewHint("Aplicaciones del catalogo. Marca las que quieras comprobar o instalar.");
+            _appsHint = Theme.Hint("Aplicaciones del catálogo. Marca las que quieras comprobar o instalar.");
 
             _apps = new CheckedListBox
             {
-                Dock = DockStyle.Fill,
-                CheckOnClick = true,
-                IntegralHeight = false,
-                HorizontalScrollbar = true,
-                Margin = new Padding(0, 0, 0, 4)
+                Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false,
+                HorizontalScrollbar = true, BorderStyle = BorderStyle.FixedSingle,
+                Font = Theme.Body, Margin = new Padding(0, 0, 0, 10)
             };
 
-            var refresh = NewButton("Recargar catalogo",      Color.FromArgb(230, 230, 230), Color.Black);
-            var audit   = NewButton("Comprobar instaladas",   Color.FromArgb(230, 230, 230), Color.Black);
-            var apply   = NewButton("INSTALAR SELECCIONADAS", Color.FromArgb(0, 120, 60),    Color.White);
+            var apply   = NewButton("Instalar seleccionadas", Theme.ButtonKind.Success,   Theme.GlyphDownload);
+            var audit   = NewButton("Comprobar instaladas",   Theme.ButtonKind.Secondary, Theme.GlyphSearch);
+            var refresh = NewButton("Recargar catálogo",      Theme.ButtonKind.Secondary, Theme.GlyphRefresh);
 
             refresh.Click += async (s, e) => await RefreshApps();
             audit.Click   += async (s, e) => await Execute("apps", reportOnly: true);
@@ -305,10 +569,10 @@ namespace Toolkit.App
             grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             grid.Controls.Add(_appsHint, 0, 0);
             grid.Controls.Add(_apps, 0, 1);
-            grid.Controls.Add(NewButtonRow(refresh, audit, apply), 0, 2);
+            grid.Controls.Add(NewButtonRow(apply, audit, refresh), 0, 2);
 
-            tab.Controls.Add(grid);
-            return tab;
+            page.Controls.Add(grid);
+            return page;
         }
 
         private sealed class AppRow
@@ -317,16 +581,16 @@ namespace Toolkit.App
             public bool Enabled;
             public override string ToString() =>
                 Name + (string.IsNullOrEmpty(Version) || Version == "0.0.0" ? "" : "  v" + Version) +
-                (Enabled ? "" : "   (fuera del despliegue automatico: enabled=false; se instala si la marcas)");
+                (Enabled ? "" : "   (fuera del despliegue automático: enabled=false; se instala si la marcas)");
         }
 
         /// <summary>
-        /// Lee las apps del catalogo con el mismo runspace de la pestana Usuarios.
+        /// Lee las apps del catálogo con el runspace compartido.
         /// Se hace en PowerShell (ConvertFrom-Json) para no meter un parser JSON en el exe.
         /// </summary>
         private async Task RefreshApps()
         {
-            SetBusy(true, "Leyendo catalogo de aplicaciones...");
+            SetBusy(true, "Leyendo catálogo de aplicaciones...");
             var rows = new List<AppRow>();
             string origin = null, error = null;
 
@@ -361,16 +625,16 @@ namespace Toolkit.App
 
             if (error != null)
             {
-                _appsHint.Text = "No se pudo leer el catalogo: " + error;
-                _appsHint.ForeColor = Color.Firebrick;
+                _appsHint.Text = "No se pudo leer el catálogo: " + error;
+                _appsHint.ForeColor = Theme.Danger;
             }
             else
             {
-                _appsHint.Text = "Catalogo: " + origin + "   ·   " + rows.Count + " aplicacion(es). Marca las que quieras comprobar o instalar.";
-                _appsHint.ForeColor = Color.DimGray;
+                _appsHint.Text = "Catálogo: " + origin + "   ·   " + rows.Count + " aplicación(es). Marca las que quieras comprobar o instalar.";
+                _appsHint.ForeColor = Theme.TextMuted;
             }
 
-            SetBusy(false, error == null ? "Catalogo cargado." : "Error leyendo el catalogo.");
+            SetBusy(false, error == null ? "Catálogo cargado." : "Error leyendo el catálogo.", error == null ? StatusKind.Info : StatusKind.Error);
         }
 
         private string[] SelectedApps()
@@ -385,18 +649,18 @@ namespace Toolkit.App
         }
 
         // -------------------------------------------------------------------
-        //  Pestana Red (solo diagnostico: no modifica nada)
+        //  Página Red (solo diagnóstico: no modifica nada)
         // -------------------------------------------------------------------
-        private TabPage BuildNetworkTab()
+        private Panel BuildNetworkPage()
         {
-            var tab = NewTab("Red");
+            var page = NewPage();
             var stack = NewStack();
 
-            stack.Controls.Add(NewHint(
-                "Mide latencia, jitter y perdida contra los destinos del catalogo, resuelve DNS, prueba puertos TCP, " +
+            stack.Controls.Add(Theme.Hint(
+                "Mide latencia, jitter y pérdida contra los destinos del catálogo, resuelve DNS, prueba puertos TCP, " +
                 "certificados TLS, MTU y proxy. No cambia nada en el equipo."));
 
-            // Etiqueta + numero + pista en una fila que se parte si no cabe.
+            // Etiqueta + número + pista en una fila que se parte si no cabe.
             var row = new FlowLayoutPanel
             {
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -404,52 +668,51 @@ namespace Toolkit.App
             };
             _pingCount = new NumericUpDown
             {
-                Width = 70, Minimum = 4, Maximum = 500, Value = 50,
-                Margin = new Padding(6, 0, 10, 0)
+                Width = 70, Minimum = 4, Maximum = 500, Value = 50, Font = Theme.Body,
+                Margin = new Padding(6, 0, 10, 0), BorderStyle = BorderStyle.FixedSingle
             };
-            row.Controls.Add(new Label { Text = "Pings por destino:", AutoSize = true, Margin = new Padding(0, 4, 0, 0) });
+            row.Controls.Add(new Label { Text = "Pings por destino:", AutoSize = true, Font = Theme.Body, ForeColor = Theme.Text, Margin = new Padding(0, 5, 0, 0) });
             row.Controls.Add(_pingCount);
             row.Controls.Add(new Label
             {
-                Text = "(50 tarda ~1 min; baja a 10 para un vistazo rapido)",
-                AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(0, 4, 0, 0)
+                Text = "50 tarda ~1 min; baja a 10 para un vistazo rápido.",
+                AutoSize = true, ForeColor = Theme.TextMuted, Font = Theme.Body, Margin = new Padding(0, 5, 0, 0)
             });
             stack.Controls.Add(row);
 
-            var run = NewButton("EJECUTAR DIAGNOSTICO", Color.FromArgb(0, 90, 150), Color.White);
+            var run = NewButton("Ejecutar diagnóstico", Theme.ButtonKind.Primary, Theme.GlyphPlay);
             run.Click += async (s, e) => await Execute("network", reportOnly: true);
             stack.Controls.Add(NewButtonRow(run));
 
-            tab.Controls.Add(stack);
-            return tab;
+            page.Controls.Add(stack);
+            return page;
         }
 
         // -------------------------------------------------------------------
-        //  Pestana Soporte: utilidades de un clic para el tecnico de L1.
-        //  Cada boton llama a una funcion de Toolkit.Support.psm1 en el runspace
+        //  Página Soporte: utilidades de un clic para el técnico de L1.
+        //  Cada botón llama a una función de Toolkit.Support.psm1 en el runspace
         //  compartido; no pasa por el orquestador porque son acciones sueltas.
+        //  Todos los botones miden lo mismo para que formen una cuadrícula.
         // -------------------------------------------------------------------
-        private TabPage BuildSupportTab()
+        private const int SupportButtonWidth = 212;
+
+        private Panel BuildSupportPage()
         {
-            var tab = NewTab("Soporte");
+            var page = NewPage();
             var stack = NewStack();
+            stack.Padding = new Padding(16, 6, 16, 8);
 
-            var grey  = Color.FromArgb(230, 230, 230);
-            var blue  = Color.FromArgb(0, 90, 150);
-            var green = Color.FromArgb(0, 120, 60);
-            var amber = Color.FromArgb(170, 95, 0);
-
-            // --- Diagnostico ---
-            stack.Controls.Add(NewSection("Diagnostico  (no cambia nada)"));
-            var bInfo    = NewButton("Info del equipo",     grey, Color.Black);
-            var bAudio   = NewButton("Audio y microfono",   grey, Color.Black);
-            var bPrint   = NewButton("Impresoras",          grey, Color.Black);
-            var bUpdate  = NewButton("Windows Update",      grey, Color.Black);
-            var bTime    = NewButton("Hora del sistema",    grey, Color.Black);
-            var bEvents  = NewButton("Errores recientes (24 h)", grey, Color.Black);
-            var bProcs   = NewButton("Procesos que mas consumen", grey, Color.Black);
+            // --- Diagnóstico ---
+            stack.Controls.Add(Theme.SectionLabel("Diagnóstico  ·  no cambia nada"));
+            var bInfo    = SupportButton("Info del equipo",           Theme.GlyphInfo);
+            var bAudio   = SupportButton("Audio y micrófono",         Theme.GlyphAudio);
+            var bPrint   = SupportButton("Impresoras",                Theme.GlyphPrinter);
+            var bUpdate  = SupportButton("Windows Update",            Theme.GlyphUpdate);
+            var bTime    = SupportButton("Hora del sistema",          Theme.GlyphClock);
+            var bEvents  = SupportButton("Errores recientes (24 h)",  Theme.GlyphError);
+            var bProcs   = SupportButton("Procesos que más consumen", Theme.GlyphProcess);
             bInfo.Click   += async (s, e) => await RunSupport("Info del equipo",   "Get-SupportSummary | Out-Null");
-            bAudio.Click  += async (s, e) => await RunSupport("Audio y microfono", "Test-AudioSetup | Out-Null");
+            bAudio.Click  += async (s, e) => await RunSupport("Audio y micrófono", "Test-AudioSetup | Out-Null");
             bPrint.Click  += async (s, e) => await RunSupport("Impresoras",        "Get-PrinterReport | Out-Null");
             bUpdate.Click += async (s, e) => await RunSupport("Windows Update",    "Get-UpdateStatus | Out-Null");
             bTime.Click   += async (s, e) => await RunSupport("Hora del sistema",  "Get-TimeStatus | Out-Null");
@@ -457,50 +720,48 @@ namespace Toolkit.App
             bProcs.Click  += async (s, e) => await RunSupport("Procesos",          "Get-TopProcesses | Out-Null");
             stack.Controls.Add(NewButtonRow(bInfo, bAudio, bPrint, bUpdate, bTime, bEvents, bProcs));
 
-            // --- Reparaciones rapidas ---
-            stack.Controls.Add(NewSection("Reparaciones rapidas"));
-            var bNet     = NewButton("Reparar red",                    blue, Color.White);
-            var bNetDeep = NewButton("Reset de red (reinicia)",        amber, Color.White);
-            var bAudioR  = NewButton("Reiniciar audio",                blue, Color.White);
-            var bQueue   = NewButton("Limpiar cola de impresion",      blue, Color.White);
-            var bSync    = NewButton("Sincronizar hora",               blue, Color.White);
-            var bTemp    = NewButton("Limpiar temporales",             blue, Color.White);
-            var bMedia   = NewButton("Permitir microfono y camara",    green, Color.White);
-            var bPower   = NewButton("No suspender el equipo",         blue, Color.White);
-            var bScan    = NewButton("Buscar actualizaciones",         blue, Color.White);
-            var bSfc     = NewButton("Reparar archivos del sistema",   amber, Color.White);
+            // --- Reparaciones rápidas ---
+            stack.Controls.Add(Theme.SectionLabel("Reparaciones rápidas"));
+            var bNet     = SupportButton("Reparar red",                  Theme.GlyphNetwork);
+            var bNetDeep = SupportButton("Reset de red (reinicia)",      Theme.GlyphNetwork, Theme.ButtonKind.Warn);
+            var bAudioR  = SupportButton("Reiniciar audio",              Theme.GlyphAudio);
+            var bQueue   = SupportButton("Limpiar cola de impresión",    Theme.GlyphPrinter);
+            var bSync    = SupportButton("Sincronizar hora",             Theme.GlyphClock);
+            var bTemp    = SupportButton("Limpiar temporales",           Theme.GlyphBroom);
+            var bMedia   = SupportButton("Permitir micrófono y cámara",  Theme.GlyphMic);
+            var bPower   = SupportButton("No suspender el equipo",       Theme.GlyphSleep);
+            var bScan    = SupportButton("Buscar actualizaciones",       Theme.GlyphUpdate);
+            var bSfc     = SupportButton("Reparar archivos del sistema", Theme.GlyphShield, Theme.ButtonKind.Warn);
+            var bReboot  = SupportButton("Reiniciar equipo (60 s)",      Theme.GlyphPower, Theme.ButtonKind.Danger);
+            var bAbort   = SupportButton("Cancelar reinicio",            Theme.GlyphStop);
 
             bNet.Click     += async (s, e) => await RunSupport("Reparar red", "Repair-Network | Out-Null",
-                "Se vaciara la cache DNS y se renovara la IP por DHCP. La red se corta uno o dos segundos.");
+                "Se vaciará la caché DNS y se renovará la IP por DHCP. La red se corta uno o dos segundos.", "Reparar red");
             bNetDeep.Click += async (s, e) => await RunSupport("Reset de red", "Repair-Network -Deep | Out-Null",
-                "Reset profundo: Winsock y pila TCP/IP. Deshace configuraciones de proxy/VPN raras.\n\nHABRA QUE REINICIAR EL EQUIPO al terminar.");
+                "Reset profundo: Winsock y pila TCP/IP. Deshace configuraciones de proxy/VPN raras.\n\nHabrá que reiniciar el equipo al terminar.", "Hacer el reset");
             bAudioR.Click  += async (s, e) => await RunSupport("Reiniciar audio", "Restart-AudioServices | Out-Null",
-                "Se reiniciaran los servicios de audio. El sonido se corta unos segundos; el softphone puede necesitar reabrirse.");
-            bQueue.Click   += async (s, e) => await RunSupport("Limpiar cola de impresion", "Clear-PrintQueue",
-                "Se eliminaran TODOS los trabajos pendientes de todas las impresoras de este equipo.");
+                "Se reiniciarán los servicios de audio. El sonido se corta unos segundos; el softphone puede necesitar reabrirse.", "Reiniciar audio");
+            bQueue.Click   += async (s, e) => await RunSupport("Limpiar cola de impresión", "Clear-PrintQueue",
+                "Se eliminarán TODOS los trabajos pendientes de todas las impresoras de este equipo.", "Limpiar la cola");
             bSync.Click    += async (s, e) => await RunSupport("Sincronizar hora", "Sync-SystemTime | Out-Null");
             bTemp.Click    += async (s, e) => await RunSupport("Limpiar temporales", "Clear-TempFiles | Out-Null",
-                "Se borraran los archivos temporales de mas de 1 dia de todos los perfiles y de Windows, y se vaciara la papelera.");
-            bMedia.Click   += async (s, e) => await RunSupport("Permitir microfono y camara", "Enable-MediaConsent | Out-Null",
-                "Se permitira el microfono y la camara para el equipo, las apps de escritorio y todos los usuarios.\n\nReversible con 'Revertir' (pestana Ubicacion).");
+                "Se borrarán los archivos temporales de más de 1 día de todos los perfiles y de Windows, y se vaciará la papelera.", "Limpiar");
+            bMedia.Click   += async (s, e) => await RunSupport("Permitir micrófono y cámara", "Enable-MediaConsent | Out-Null",
+                "Se permitirá el micrófono y la cámara para el equipo, las apps de escritorio y todos los usuarios.\n\nReversible con 'Revertir' (página Ubicación).", "Permitir");
             bPower.Click   += async (s, e) => await RunSupport("No suspender", "Set-NoSleepPower | Out-Null",
-                "Con corriente, el equipo no se suspendera ni hibernara; la pantalla se apaga a los 15 min.\nSe desactiva la hibernacion (libera varios GB).");
+                "Con corriente, el equipo no se suspenderá ni hibernará; la pantalla se apaga a los 15 min.\nSe desactiva la hibernación (libera varios GB).", "Aplicar");
             bScan.Click    += async (s, e) => await RunSupport("Buscar actualizaciones", "Start-UpdateScan | Out-Null",
-                "Se pedira a Windows Update que busque, descargue e instale actualizaciones. Puede pedir reinicio mas tarde.");
+                "Se pedirá a Windows Update que busque, descargue e instale actualizaciones. Puede pedir reinicio más tarde.", "Buscar");
             bSfc.Click     += async (s, e) => await RunSupport("Reparar archivos del sistema", "Repair-SystemFiles | Out-Null",
-                "sfc /scannow tarda entre 5 y 20 minutos. No cierres el toolkit mientras tanto.");
-            var bReboot = NewButton("Reiniciar equipo (60 s)", Color.FromArgb(150, 40, 40), Color.White);
-            var bAbort  = NewButton("Cancelar reinicio",       grey, Color.Black);
-            bReboot.Click += async (s, e) => await RunSupport("Reiniciar equipo", "Restart-ComputerDelayed -Seconds 60 | Out-Null",
-                "El equipo se reiniciara en 60 segundos. El agente vera un aviso de Windows con la cuenta atras y podra guardar.\n\nSe puede cancelar con 'Cancelar reinicio' antes de que venza.");
-            bAbort.Click  += async (s, e) => await RunSupport("Cancelar reinicio", "Restart-ComputerDelayed -Cancel | Out-Null");
+                "sfc /scannow tarda entre 5 y 20 minutos. No cierres el toolkit mientras tanto.", "Empezar");
+            bReboot.Click  += async (s, e) => await RunSupport("Reiniciar equipo", "Restart-ComputerDelayed -Seconds 60 | Out-Null",
+                "El equipo se reiniciará en 60 segundos. El agente verá un aviso de Windows con la cuenta atrás y podrá guardar.\n\nSe puede cancelar con 'Cancelar reinicio' antes de que venza.", "Reiniciar en 60 s", danger: true);
+            bAbort.Click   += async (s, e) => await RunSupport("Cancelar reinicio", "Restart-ComputerDelayed -Cancel | Out-Null");
             stack.Controls.Add(NewButtonRow(bNet, bNetDeep, bAudioR, bQueue, bSync, bTemp, bMedia, bPower, bScan, bSfc, bReboot, bAbort));
 
             // --- Reporte ---
-            stack.Controls.Add(NewSection("Reporte"));
-            var bReport = NewButton("Guardar reporte para ticket", green, Color.White);
-            var bCopy   = NewButton("Copiar log",                  grey,  Color.Black);
-            var bLogs   = NewButton("Abrir carpeta de logs",       grey,  Color.Black);
+            stack.Controls.Add(Theme.SectionLabel("Reporte"));
+            var bReport = SupportButton("Guardar reporte para ticket", Theme.GlyphSave, Theme.ButtonKind.Primary);
             bReport.Click += async (s, e) =>
             {
                 var path = await RunSupport("Reporte para ticket",
@@ -511,20 +772,17 @@ namespace Toolkit.App
                     try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + path + "\""); } catch { }
                 }
             };
-            bCopy.Click += (s, e) =>
-            {
-                try { Clipboard.SetText(_log.Text); _status.Text = "Log copiado al portapapeles."; }
-                catch (Exception ex) { _status.Text = "No se pudo copiar: " + ex.Message; }
-            };
-            bLogs.Click += (s, e) =>
-            {
-                var dir = System.IO.Path.Combine(_args.Root, "logs");
-                try { System.Diagnostics.Process.Start("explorer.exe", System.IO.Directory.Exists(dir) ? dir : _args.Root); } catch { }
-            };
-            stack.Controls.Add(NewButtonRow(bReport, bCopy, bLogs));
+            stack.Controls.Add(NewButtonRow(bReport));
 
-            tab.Controls.Add(stack);
-            return tab;
+            page.Controls.Add(stack);
+            return page;
+        }
+
+        private Button SupportButton(string text, string glyph, Theme.ButtonKind kind = Theme.ButtonKind.Secondary)
+        {
+            var b = Theme.MakeButton(text, kind, glyph, SupportButtonWidth);
+            _actionButtons.Add(b);
+            return b;
         }
 
         private void ShowAbout()
@@ -532,33 +790,20 @@ namespace Toolkit.App
             using (var dlg = new AboutDialog()) dlg.ShowDialog(this);
         }
 
-        private static Label NewSection(string text) =>
-            new Label
-            {
-                Text = text, AutoSize = true,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-                ForeColor = Color.FromArgb(32, 45, 66),
-                Margin = new Padding(3, 8, 3, 2)
-            };
-
         /// <summary>
-        /// Ejecuta una accion de soporte en el runspace compartido. Con <paramref name="confirm"/>
-        /// pide confirmacion antes (para las que cambian algo). Devuelve el ultimo
+        /// Ejecuta una acción de soporte en el runspace compartido. Con <paramref name="confirm"/>
+        /// pide confirmación antes (para las que cambian algo). Devuelve el último
         /// valor de salida como texto (lo usa el reporte para abrir el archivo).
         /// </summary>
-        private async Task<string> RunSupport(string title, string script, string confirm = null,
-                                              IDictionary<string, object> parameters = null)
+        private async Task<string> RunSupport(string title, string script, string confirm = null, string okText = "Continuar",
+                                              bool danger = false, IDictionary<string, object> parameters = null)
         {
-            if (confirm != null)
-            {
-                var r = MessageBox.Show(this, confirm + "\n\n¿Continuar?", title,
-                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (r != DialogResult.Yes) return null;
-            }
+            if (confirm != null && !Dialogs.Confirm(this, title, confirm, okText, danger)) return null;
 
             SetBusy(true, title + "...");
             _log.Clear();
             string last = null, error = null;
+            bool cancelled = false;
 
             await Task.Run(() =>
             {
@@ -568,13 +813,19 @@ namespace Toolkit.App
                     if (res != null && res.Count > 0 && res[res.Count - 1] != null)
                         last = res[res.Count - 1].BaseObject?.ToString();
                 }
+                catch (PipelineStoppedException) { cancelled = true; }
                 catch (Exception ex) { error = ex.Message; }
             });
 
-            if (error != null)
+            if (cancelled)
+            {
+                Append(LogLevel.Warn, "Cancelado por el técnico.");
+                SetBusy(false, title + ": cancelado.", StatusKind.Warn);
+            }
+            else if (error != null)
             {
                 Append(LogLevel.Error, "ERROR: " + error);
-                SetBusy(false, title + ": error. Revisa el log.");
+                SetBusy(false, title + ": error. Revisa la salida.", StatusKind.Error);
             }
             else
             {
@@ -584,63 +835,50 @@ namespace Toolkit.App
         }
 
         // -------------------------------------------------------------------
-        //  Pestana Usuarios
+        //  Página Usuarios
         // -------------------------------------------------------------------
-        private TabPage BuildUsersTab()
+        private Panel BuildUsersPage()
         {
-            var tab = NewTab("Usuarios");
-            tab.AutoScroll = false;
+            var page = NewPage();
+            page.AutoScroll = false;
 
             _users = new ListView
             {
-                Dock = DockStyle.Fill,
-                View = View.Details,
-                FullRowSelect = true,
-                MultiSelect = false,
-                HideSelection = false,
-                GridLines = true,
-                Margin = new Padding(0)
+                Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
+                MultiSelect = false, HideSelection = false, GridLines = false,
+                BorderStyle = BorderStyle.FixedSingle, Font = Theme.Body, Margin = new Padding(0)
             };
-            _users.Columns.Add("Usuario", 150);
-            _users.Columns.Add("Estado", 95);
-            _users.Columns.Add("Admin", 55);
-            _users.Columns.Add("Contrasena", 100);
-            _users.Columns.Add("Ultimo inicio", 115);
-            _users.Columns.Add("Sesion", 70);
-            _users.Columns.Add("Perfil", 220);
+            _users.Columns.Add("Usuario", Theme.Px(150));
+            _users.Columns.Add("Estado", Theme.Px(90));
+            _users.Columns.Add("Admin", Theme.Px(55));
+            _users.Columns.Add("Contraseña", Theme.Px(100));
+            _users.Columns.Add("Último inicio", Theme.Px(115));
+            _users.Columns.Add("Sesión", Theme.Px(65));
+            _users.Columns.Add("Perfil", Theme.Px(160));
             _users.SelectedIndexChanged += (s, e) => UpdateUserButtons();
             _users.DoubleClick += (s, e) => { if (_btnUserPwd.Enabled) ChangePassword(); };
-            // La ultima columna absorbe el ancho sobrante para no dejar un hueco gris.
+            // La última columna absorbe el ancho sobrante para no dejar un hueco gris.
             _users.Resize += (s, e) => StretchLastColumn(_users);
 
             // Botonera vertical: los botones se apilan y comparten anchura.
             var side = new FlowLayoutPanel
             {
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                Width = 182,
+                FlowDirection = FlowDirection.TopDown, WrapContents = false, Width = 206,
                 Anchor = AnchorStyles.Top | AnchorStyles.Bottom,   // alto = el de la fila; si no cabe, scroll
-                AutoScroll = true,
-                Margin = new Padding(8, 0, 0, 0)
+                AutoScroll = true, Margin = new Padding(10, 0, 0, 0)
             };
-            Func<string, Color, Color, Button> mk = (text, back, fore) =>
+            Func<string, Theme.ButtonKind, string, Button> mk = (text, kind, glyph) =>
             {
-                var b = new Button
-                {
-                    Text = text, Width = 178, Height = 32,
-                    BackColor = back, ForeColor = fore, FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-                    Margin = new Padding(0, 0, 0, 6)
-                };
+                var b = Theme.MakeButton(text, kind, glyph, 196);
+                b.Margin = new Padding(0, 0, 0, 6);
                 return b;
             };
-            var grey  = Color.FromArgb(230, 230, 230);
-            _btnUsersRefresh = mk("Actualizar lista",      grey, Color.Black);
-            _btnUserNew      = mk("Nuevo usuario...",      Color.FromArgb(0, 120, 60), Color.White);
-            _btnUserPwd      = mk("Cambiar contrasena...", grey, Color.Black);
-            _btnUserNoPwd    = mk("Quitar contrasena",     grey, Color.Black);
-            _btnUserToggle   = mk("Deshabilitar",          grey, Color.Black);
-            _btnUserDelete   = mk("Eliminar usuario",      Color.FromArgb(150, 40, 40), Color.White);
+            _btnUsersRefresh = mk("Actualizar lista",      Theme.ButtonKind.Secondary, Theme.GlyphRefresh);
+            _btnUserNew      = mk("Nuevo usuario...",      Theme.ButtonKind.Success,   Theme.GlyphAdd);
+            _btnUserPwd      = mk("Cambiar contraseña...", Theme.ButtonKind.Secondary, Theme.GlyphKey);
+            _btnUserNoPwd    = mk("Quitar contraseña",     Theme.ButtonKind.Secondary, Theme.GlyphKey);
+            _btnUserToggle   = mk("Deshabilitar",          Theme.ButtonKind.Secondary, Theme.GlyphBlock);
+            _btnUserDelete   = mk("Eliminar usuario",      Theme.ButtonKind.Danger,    Theme.GlyphDelete);
 
             _btnUsersRefresh.Click += async (s, e) => await RefreshUsers();
             _btnUserNew.Click      += (s, e) => CreateUser();
@@ -652,16 +890,16 @@ namespace Toolkit.App
             side.Controls.AddRange(new Control[] { _btnUsersRefresh, _btnUserNew, _btnUserPwd, _btnUserNoPwd, _btnUserToggle, _btnUserDelete });
 
             // Dos columnas: la lista se lleva todo el ancho, la botonera lo justo.
-            var host = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(8) };
+            var host = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Padding = new Padding(16, 12, 16, 12) };
             host.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             host.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             host.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
             host.Controls.Add(_users, 0, 0);
             host.Controls.Add(side, 1, 0);
-            tab.Controls.Add(host);
+            page.Controls.Add(host);
 
             UpdateUserButtons();
-            return tab;
+            return page;
         }
 
         private UserRow SelectedUser()
@@ -679,25 +917,6 @@ namespace Toolkit.App
             _btnUserToggle.Enabled = any && !u.IsCurrentUser;
             _btnUserToggle.Text    = (any && !u.Enabled) ? "Habilitar" : "Deshabilitar";
             _btnUserDelete.Enabled = any && !u.BuiltIn && !u.IsCurrentUser && !u.SessionOpen;
-        }
-
-        /// <summary>
-        /// Runspace compartido por las pestanas Usuarios, Aplicaciones y Soporte
-        /// (acciones sueltas que no pasan por el orquestador). Se abre una vez y
-        /// se reutiliza: asi todo va al mismo archivo de log.
-        /// </summary>
-        private ScriptHost SharedHost()
-        {
-            if (_sharedHost == null)
-            {
-                var h = new ScriptHost();
-                h.Output += (s, e) => Append(e.Level, e.Text);
-                h.Open();
-                h.Invoke("param($Root) Initialize-Toolkit -Root $Root",
-                    new Dictionary<string, object> { { "Root", _args.Root } });
-                _sharedHost = h;
-            }
-            return _sharedHost;
         }
 
         private async Task RefreshUsers()
@@ -720,28 +939,32 @@ namespace Toolkit.App
             _users.Items.Clear();
             foreach (var u in rows)
             {
-                var estado = u.LockedOut ? "BLOQUEADA" : (u.Enabled ? "Activa" : "Deshabilitada");
+                var estado = u.LockedOut ? "Bloqueada" : (u.Enabled ? "Activa" : "Deshabilitada");
                 var item = new ListViewItem(new[]
                 {
                     u.Name + (u.IsCurrentUser ? "  (actual)" : ""),
                     estado,
-                    u.IsAdmin ? "si" : "",
-                    u.PasswordRequired ? "requerida" : "SIN contrasena",
+                    u.IsAdmin ? "Sí" : "",
+                    u.PasswordRequired ? "requerida" : "sin contraseña",
                     u.LastLogon,
-                    u.SessionOpen ? "ABIERTA" : (u.HasProfile ? "perfil" : "-"),
+                    u.SessionOpen ? "abierta" : (u.HasProfile ? "perfil" : "–"),
                     u.ProfilePath ?? ""
-                }) { Tag = u };
-                if (u.BuiltIn)       item.ForeColor = Color.Gray;
-                else if (!u.Enabled) item.ForeColor = Color.FromArgb(160, 100, 0);
+                }) { Tag = u, UseItemStyleForSubItems = false };
+                if (u.BuiltIn)       item.ForeColor = Theme.TextMuted;
+                else if (!u.Enabled) item.ForeColor = Theme.TextMuted;
+                if (u.IsCurrentUser) item.Font = Theme.BodyBold;
+                if (u.LockedOut)     item.SubItems[1].ForeColor = Theme.Danger;
+                if (!u.PasswordRequired && !u.BuiltIn) item.SubItems[3].ForeColor = Theme.Warn;
+                if (u.SessionOpen)   item.SubItems[5].ForeColor = Theme.Ok;
                 _users.Items.Add(item);
             }
             _users.EndUpdate();
             _usersLoaded = true;
             UpdateUserButtons();
 
-            SetBusy(false, error != null ? "Error leyendo cuentas: " + error : rows.Count + " cuenta(s) local(es).");
-            if (error != null)
-                MessageBox.Show(this, error, "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            SetBusy(false, error != null ? "Error leyendo cuentas: " + error : rows.Count + " cuenta(s) local(es).",
+                    error != null ? StatusKind.Error : StatusKind.Info);
+            if (error != null) Dialogs.Warn(this, "Usuarios", error);
         }
 
         private static UserRow ToRow(PSObject o)
@@ -781,10 +1004,10 @@ namespace Toolkit.App
         private async void ChangePassword()
         {
             var u = SelectedUser(); if (u == null) return;
-            using (var dlg = new PasswordDialog("Cambiar contrasena", u.Name))
+            using (var dlg = new PasswordDialog("Cambiar contraseña", u.Name))
             {
                 if (dlg.ShowDialog(this) != DialogResult.OK) return;
-                await RunUserAction("Cambiando contrasena de " + u.Name + "...",
+                await RunUserAction("Cambiando contraseña de " + u.Name + "...",
                     "param($Name, $Password) Set-LocalUserPassword -Name $Name -Password $Password",
                     new Dictionary<string, object> { { "Name", u.Name }, { "Password", dlg.Password } });
             }
@@ -793,12 +1016,11 @@ namespace Toolkit.App
         private async void ClearPassword()
         {
             var u = SelectedUser(); if (u == null) return;
-            var ok = MessageBox.Show(this,
-                "La cuenta '" + u.Name + "' quedara SIN contrasena: cualquiera podra iniciar sesion en este equipo con ella.\n\n" +
-                "(Windows no permite usar cuentas sin contrasena por red ni por escritorio remoto.)\n\n¿Continuar?",
-                "Quitar contrasena", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (ok != DialogResult.Yes) return;
-            await RunUserAction("Quitando contrasena de " + u.Name + "...",
+            if (!Dialogs.Confirm(this, "Quitar contraseña",
+                "La cuenta '" + u.Name + "' quedará sin contraseña: cualquiera podrá iniciar sesión en este equipo con ella.\n\n" +
+                "Windows no permite usar cuentas sin contraseña por red ni por escritorio remoto.",
+                "Quitar contraseña", danger: true)) return;
+            await RunUserAction("Quitando contraseña de " + u.Name + "...",
                 "param($Name) Clear-LocalUserPassword -Name $Name",
                 new Dictionary<string, object> { { "Name", u.Name } });
         }
@@ -815,19 +1037,19 @@ namespace Toolkit.App
         private async void DeleteUser()
         {
             var u = SelectedUser(); if (u == null) return;
-            var text = "Se va a ELIMINAR la cuenta '" + u.Name + "'. Esta accion no se puede deshacer.\n\n";
+            var text = "Se va a eliminar la cuenta '" + u.Name + "'. Esta acción no se puede deshacer.";
             bool removeProfile = false;
             if (u.HasProfile)
             {
-                text += "¿Eliminar tambien su carpeta de perfil?\n    " + u.ProfilePath + "\n\n" +
-                        "Si = cuenta + carpeta     No = solo la cuenta     Cancelar = no hacer nada";
-                var r = MessageBox.Show(this, text, "Eliminar usuario", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Warning);
-                if (r == DialogResult.Cancel) return;
-                removeProfile = (r == DialogResult.Yes);
+                var r = Dialogs.Choice(this, "Eliminar usuario",
+                    text + "\n\nLa cuenta tiene carpeta de perfil:\n    " + u.ProfilePath,
+                    new[] { "Eliminar cuenta y carpeta", "Solo la cuenta", "Cancelar" }, Dialogs.Kind.Warning, dangerPrimary: true);
+                if (r == 2) return;
+                removeProfile = (r == 0);
             }
             else
             {
-                if (MessageBox.Show(this, text + "¿Continuar?", "Eliminar usuario", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+                if (!Dialogs.Confirm(this, "Eliminar usuario", text, "Eliminar cuenta", danger: true)) return;
             }
             await RunUserAction("Eliminando " + u.Name + "...",
                 "param($Name, $RemoveProfile) Remove-LocalUserAccount -Name $Name -RemoveProfile:$RemoveProfile",
@@ -853,14 +1075,14 @@ namespace Toolkit.App
         }
 
         /// <summary>
-        /// Ejecuta una accion de Toolkit.Users.psm1. Todas devuelven {Success, Message}
-        /// en vez de lanzar, para que el error llegue al tecnico en claro.
+        /// Ejecuta una acción de Toolkit.Users.psm1. Todas devuelven {Success, Message}
+        /// en vez de lanzar, para que el error llegue al técnico en claro.
         /// </summary>
         private async Task RunUserAction(string busyText, string script, Dictionary<string, object> parameters)
         {
             SetBusy(true, busyText);
             bool success = false;
-            string message = "Sin respuesta del modulo.";
+            string message = "Sin respuesta del módulo.";
 
             await Task.Run(() =>
             {
@@ -874,25 +1096,25 @@ namespace Toolkit.App
                         message = Prop(r, "Message");
                     }
                 }
+                catch (PipelineStoppedException) { message = "Cancelado."; }
                 catch (Exception ex) { message = ex.Message; }
             });
 
-            SetBusy(false, message);
-            if (!success)
-                MessageBox.Show(this, message, "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            SetBusy(false, message, success ? StatusKind.Ok : StatusKind.Warn);
+            if (!success) Dialogs.Warn(this, "Usuarios", message);
 
             await RefreshUsers();
         }
 
         // -------------------------------------------------------------------
-        //  Ejecucion de modulos (orquestador embebido)
+        //  Construcción de páginas
         // -------------------------------------------------------------------
-        // Layout fluido: nada de coordenadas fijas. Cada pestana es una pila vertical
+        // Layout fluido: nada de coordenadas fijas. Cada página es una pila vertical
         // (TableLayoutPanel de una columna) que se adapta al ancho; si el alto no
-        // alcanza, la pestana muestra scroll en vez de recortar.
+        // alcanza, la página muestra scroll en vez de recortar.
 
-        private static TabPage NewTab(string title) =>
-            new TabPage(title) { BackColor = Color.FromArgb(243, 243, 243), AutoScroll = true, Padding = new Padding(0) };
+        private static Panel NewPage() =>
+            new Panel { BackColor = Theme.Surface, AutoScroll = true, Padding = new Padding(0) };
 
         private static TableLayoutPanel NewStack()
         {
@@ -901,45 +1123,22 @@ namespace Toolkit.App
                 Dock = DockStyle.Top,
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 ColumnCount = 1,
-                Padding = new Padding(12, 10, 12, 4)
+                Padding = new Padding(16, 14, 16, 6)
             };
             // Columna al 100 %: es lo que permite que las etiquetas se ajusten al ancho.
             t.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F));
             return t;
         }
 
-        /// <summary>Texto explicativo: ocupa el ancho disponible y se parte en lineas.</summary>
-        private static Label NewHint(string text) =>
-            new Label
-            {
-                Text = text,
-                AutoSize = true,
-                Anchor = AnchorStyles.Left | AnchorStyles.Right,   // en un TableLayoutPanel, esto = "ajusta y envuelve"
-                ForeColor = Color.DimGray,
-                Margin = new Padding(3, 0, 3, 10)
-            };
-
-        private static CheckBox NewCheck(string text, bool chk) =>
-            new CheckBox { Text = text, Checked = chk, AutoSize = true, Margin = new Padding(3, 2, 3, 2) };
-
-        /// <summary>Boton que se dimensiona por su texto (asi no se recorta con otra fuente o DPI).</summary>
-        private Button NewButton(string text, Color back, Color fore)
+        /// <summary>Botón de acción de una página: se registra para bloquearse mientras hay algo en curso.</summary>
+        private Button NewButton(string text, Theme.ButtonKind kind, string glyph)
         {
-            var b = new Button
-            {
-                Text = text,
-                AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = new Size(110, 34),
-                Padding = new Padding(10, 0, 10, 0),
-                BackColor = back, ForeColor = fore, FlatStyle = FlatStyle.Flat,
-                Font = new Font("Segoe UI", 9F, FontStyle.Bold),
-                Margin = new Padding(0, 0, 10, 6)
-            };
+            var b = Theme.MakeButton(text, kind, glyph);
             _actionButtons.Add(b);
             return b;
         }
 
-        /// <summary>Fila de botones que pasa a dos lineas cuando la ventana es estrecha.</summary>
+        /// <summary>Fila de botones que pasa a varias líneas cuando la ventana es estrecha.</summary>
         private static FlowLayoutPanel NewButtonRow(params Button[] buttons)
         {
             var row = new FlowLayoutPanel
@@ -947,7 +1146,7 @@ namespace Toolkit.App
                 AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 WrapContents = true,
                 Anchor = AnchorStyles.Left | AnchorStyles.Right,
-                Margin = new Padding(0, 8, 0, 0)
+                Margin = new Padding(0, 6, 0, 0)
             };
             row.Controls.AddRange(buttons);
             return row;
@@ -958,31 +1157,37 @@ namespace Toolkit.App
             if (list.Columns.Count == 0) return;
             int used = 0;
             for (int i = 0; i < list.Columns.Count - 1; i++) used += list.Columns[i].Width;
+            // La última columna se lleva el sobrante; si no hay sobrante, se queda en
+            // su mínimo y aparece el scroll horizontal (solo con la ventana muy estrecha).
             var last = list.Columns[list.Columns.Count - 1];
             var free = list.ClientSize.Width - used;
-            if (free > 120) last.Width = free;
+            last.Width = Math.Max(free, Theme.Px(80));
         }
 
+        // -------------------------------------------------------------------
+        //  Ejecución de módulos (orquestador embebido)
+        // -------------------------------------------------------------------
+
         /// <summary>
-        /// Boton ACTIVAR UBICACION: aplica todo (servicio, interruptor, consentimiento,
-        /// politicas, navegadores) y, si fue bien, encadena la comprobacion del check-in
-        /// para que el tecnico vea el veredicto final sin pulsar nada mas.
+        /// Botón Activar ubicación: aplica todo (servicio, interruptor, consentimiento,
+        /// políticas, navegadores) y, si fue bien, encadena la comprobación del check-in
+        /// para que el técnico vea el veredicto final sin pulsar nada más.
         /// </summary>
         private async void ActivateLocation()
         {
             var code = await Execute("location", reportOnly: false);
-            if (code != 0 && code != Program.ExitRebootNeeded) return;   // cancelado o fallo: ya se aviso
+            if (code != 0 && code != Program.ExitRebootNeeded) return;   // cancelado o fallo: ya se avisó
 
             Append(LogLevel.Info, "");
-            Append(LogLevel.Info, "Ubicacion activada. Comprobando ahora que el check-in de Zoho funciona...");
+            Append(LogLevel.Info, "Ubicación activada. Comprobando ahora que el check-in de Zoho funciona...");
             await Execute("location", reportOnly: true, checkIn: true, keepLog: true);
         }
 
         private const int ExitCancelled = -1;
 
         /// <summary>
-        /// Ejecuta UN modulo del orquestador con las opciones de su pestana.
-        /// Devuelve el codigo de salida (o ExitCancelled si el usuario no confirmo).
+        /// Ejecuta UN módulo del orquestador con las opciones de su página.
+        /// Devuelve el código de salida (o ExitCancelled si el usuario no confirmó).
         /// </summary>
         private async Task<int> Execute(string module, bool reportOnly, bool checkIn = false, bool keepLog = false)
         {
@@ -992,37 +1197,37 @@ namespace Toolkit.App
                 apps = SelectedApps();
                 if (apps.Length == 0)
                 {
-                    MessageBox.Show("Marca al menos una aplicacion de la lista.", "Toolkit",
-                        MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    Dialogs.Info(this, "Aplicaciones", "Marca al menos una aplicación de la lista.");
                     return ExitCancelled;
                 }
             }
 
             if (!reportOnly)
             {
-                string what;
+                string title, what, ok;
                 switch (module)
                 {
                     case "location":
-                        what = "Se va a activar la ubicacion en este equipo (servicio, registro y politicas)." +
-                               (_chkLockDown.Checked ? "\nEl usuario NO podra desactivarla desde Configuracion." : "") +
-                               (_chkBrowsers.Checked ? "\nChrome, Edge y Firefox entregaran la ubicacion a los sitios sin preguntar." : "") +
+                        title = "Activar ubicación"; ok = "Activar";
+                        what = "Se va a activar la ubicación en este equipo (servicio, registro y políticas)." +
+                               (_chkLockDown.Checked ? "\nEl usuario NO podrá desactivarla desde Configuración." : "") +
+                               (_chkBrowsers.Checked ? "\nChrome, Edge y Firefox entregarán la ubicación a los sitios sin preguntar." : "") +
                                "\n\nLos cambios de registro quedan registrados y son reversibles con 'Revertir'.";
                         break;
                     case "apps":
+                        title = "Instalar aplicaciones"; ok = "Instalar";
                         what = "Se van a instalar en silencio:\n\n  · " + string.Join("\n  · ", apps) +
-                               "\n\nLa instalacion de aplicaciones NO se deshace con 'Revertir'.";
+                               "\n\nLa instalación de aplicaciones NO se deshace con 'Revertir'.";
                         break;
                     default:
-                        what = "Se va a ejecutar el modulo '" + module + "'.";
+                        title = "Confirmar"; ok = "Continuar";
+                        what = "Se va a ejecutar el módulo '" + module + "'.";
                         break;
                 }
-                var confirm = MessageBox.Show(what + "\n\n¿Continuar?",
-                    "Confirmar", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                if (confirm != DialogResult.Yes) return ExitCancelled;
+                if (!Dialogs.Confirm(this, title, what, ok)) return ExitCancelled;
             }
 
-            // Las opciones se leen aqui, en el hilo de la UI, antes de irse al hilo de trabajo.
+            // Las opciones se leen aquí, en el hilo de la UI, antes de irse al hilo de trabajo.
             var options = new RunOptions
             {
                 Modules     = new[] { module },
@@ -1036,7 +1241,7 @@ namespace Toolkit.App
                 CheckIn     = checkIn,
                 GetPosition = _chkGetPosition.Checked,
                 PingCount   = (int)_pingCount.Value,
-                // El tecnico esta delante: no tiene sentido aplazar a la ventana nocturna.
+                // El técnico está delante: no tiene sentido aplazar a la ventana nocturna.
                 IgnoreMaintenanceWindow = true
             };
 
@@ -1047,17 +1252,12 @@ namespace Toolkit.App
             {
                 try
                 {
-                    using (var host = new ScriptHost())
-                    {
-                        host.Output += (s, e) => Append(e.Level, e.Text);
-                        host.Open();
+                    string origin;
+                    options.CatalogJson = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
+                    Append(LogLevel.Debug, "Catálogo: " + origin);
 
-                        string origin;
-                        options.CatalogJson = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
-                        Append(LogLevel.Debug, "Catalogo: " + origin);
-
-                        return host.Run(options);
-                    }
+                    // Runspace compartido: no se paga el arranque (runspace + módulos) en cada clic.
+                    return SharedHost().Run(options);
                 }
                 catch (Exception ex)
                 {
@@ -1066,25 +1266,30 @@ namespace Toolkit.App
                 }
             });
 
-            var verdict = checkIn
-                ? (exitCode == 0 ? "Check-in de Zoho: el equipo esta listo." : "Check-in de Zoho: NO va a funcionar todavia.")
-                : DescribeExit(exitCode);
-            SetBusy(false, verdict);
-
-            if (exitCode != 0 && exitCode != Program.ExitRebootNeeded)
+            if (exitCode == ScriptHost.ExitCancelled)
             {
-                MessageBox.Show(verdict + "\n\nRevisa el log para el detalle.",
-                    "Toolkit", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                SetBusy(false, "Cancelado.", StatusKind.Warn);
+                return exitCode;
+            }
+
+            var verdict = checkIn
+                ? (exitCode == 0 ? "Check-in de Zoho: el equipo está listo." : "Check-in de Zoho: NO va a funcionar todavía.")
+                : DescribeExit(exitCode);
+            var ok2 = exitCode == 0 || exitCode == Program.ExitRebootNeeded;
+            SetBusy(false, verdict, ok2 ? (exitCode == Program.ExitRebootNeeded ? StatusKind.Warn : StatusKind.Ok) : StatusKind.Error);
+
+            if (!ok2)
+            {
+                Dialogs.Warn(this, checkIn ? "Check-in de Zoho" : "Resultado", verdict + "\n\nRevisa la salida para el detalle.");
             }
             return exitCode;
         }
 
         private async void Rollback()
         {
-            var confirm = MessageBox.Show(
-                "Esto revertira TODOS los cambios de registro aplicados por el toolkit en este equipo.\n\n¿Continuar?",
-                "Confirmar reversion", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-            if (confirm != DialogResult.Yes) return;
+            if (!Dialogs.Confirm(this, "Revertir cambios",
+                "Esto revertirá TODOS los cambios de registro aplicados por el toolkit en este equipo.",
+                "Revertir", danger: true)) return;
 
             SetBusy(true, "Revirtiendo...");
             _log.Clear();
@@ -1093,18 +1298,14 @@ namespace Toolkit.App
             {
                 try
                 {
-                    using (var host = new ScriptHost())
-                    {
-                        host.Output += (s, e) => Append(e.Level, e.Text);
-                        host.Open();
-                        host.Invoke("param($Root) Initialize-Toolkit -Root $Root; Invoke-ToolkitRollback",
-                            new Dictionary<string, object> { { "Root", _args.Root } });
-                    }
+                    // Initialize-Toolkit abre un log propio para la reversión y deja el modo en interactivo.
+                    SharedHost().Invoke("param($Root) Initialize-Toolkit -Root $Root; Invoke-ToolkitRollback",
+                        new Dictionary<string, object> { { "Root", _args.Root } });
                 }
                 catch (Exception ex) { Append(LogLevel.Error, "ERROR: " + ex.Message); }
             });
 
-            SetBusy(false, "Reversion terminada.");
+            SetBusy(false, "Reversión terminada.");
         }
 
         private static string DescribeExit(int code)
@@ -1112,17 +1313,18 @@ namespace Toolkit.App
             switch (code)
             {
                 case 0:    return "Terminado correctamente.";
-                case 3010: return "Terminado. REQUIERE REINICIO.";
-                case 1001: return "Fallo el modulo de ubicacion.";
-                case 1002: return "Fallo la instalacion de una o mas aplicaciones.";
-                case 1003: return "Red en estado critico.";
+                case 3010: return "Terminado. Requiere reinicio.";
+                case 1001: return "Falló el módulo de ubicación.";
+                case 1002: return "Falló la instalación de una o más aplicaciones.";
+                case 1003: return "Red en estado crítico.";
                 case 5:    return "Sin privilegios de administrador.";
-                default:   return "Terminado con errores (codigo " + code + ").";
+                default:   return "Terminado con errores (código " + code + ").";
             }
         }
 
-        private void SetBusy(bool busy, string status)
+        private void SetBusy(bool busy, string status, StatusKind kind = StatusKind.Ok)
         {
+            _busy = busy;
             foreach (var b in _actionButtons) b.Enabled = !busy;
             _apps.Enabled = !busy;
             _btnUsersRefresh.Enabled = _btnUserNew.Enabled = !busy;
@@ -1130,36 +1332,169 @@ namespace Toolkit.App
                 _btnUserPwd.Enabled = _btnUserNoPwd.Enabled = _btnUserToggle.Enabled = _btnUserDelete.Enabled = false;
             else
                 UpdateUserButtons();
+
             _progress.Visible = busy;
-            _status.Text = status;
+            _btnCancel.Visible = busy;
+            _btnCancel.Enabled = busy;
+            _elapsed.Visible = busy;
+            if (busy)
+            {
+                _busySince = DateTime.Now;
+                _elapsed.Text = "0:00";
+                _clock.Start();
+                SetStatus(StatusKind.Busy, status);
+            }
+            else
+            {
+                _clock.Stop();
+                SetStatus(kind, status);
+            }
         }
 
+        // -------------------------------------------------------------------
+        //  Salida (log de la GUI)
+        // -------------------------------------------------------------------
+
+        /// <summary>
+        /// Se puede llamar desde cualquier hilo. Encola la línea y programa UN
+        /// volcado en el hilo de la UI; las líneas que lleguen mientras tanto
+        /// salen en ese mismo volcado.
+        /// </summary>
         private void Append(LogLevel level, string text)
         {
             if (string.IsNullOrEmpty(text)) return;
 
-            if (_log.InvokeRequired)
+            lock (_pendingLog) _pendingLog.Enqueue(new KeyValuePair<LogLevel, string>(level, text));
+
+            if (!_log.InvokeRequired)
             {
-                _log.BeginInvoke(new Action(() => Append(level, text)));
+                // Ya en el hilo de la UI (arranque, botones): volcar directamente
+                // conserva el orden respecto a lo que hubiera encolado un worker.
+                FlushLog();
                 return;
             }
-
-            Color color;
-            switch (level)
+            if (System.Threading.Interlocked.Exchange(ref _flushScheduled, 1) == 0)
             {
-                case LogLevel.Ok:    color = Color.FromArgb(120, 220, 120); break;
-                case LogLevel.Warn:  color = Color.FromArgb(240, 200, 100); break;
-                case LogLevel.Error: color = Color.FromArgb(240, 120, 120); break;
-                case LogLevel.Debug: color = Color.FromArgb(130, 130, 130); break;
-                default:             color = Color.Gainsboro; break;
+                try { _log.BeginInvoke(new Action(FlushLog)); }
+                catch (InvalidOperationException) { System.Threading.Interlocked.Exchange(ref _flushScheduled, 0); }   // ventana cerrándose
+            }
+        }
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+        private const int WM_SETREDRAW = 0x000B;
+
+        private void FlushLog()
+        {
+            // Primero se libera la marca y luego se vacía la cola: una línea que
+            // entre en medio programa otro volcado en vez de quedarse colgada.
+            System.Threading.Interlocked.Exchange(ref _flushScheduled, 0);
+            List<KeyValuePair<LogLevel, string>> batch;
+            lock (_pendingLog)
+            {
+                if (_pendingLog.Count == 0) return;
+                batch = new List<KeyValuePair<LogLevel, string>>(_pendingLog);
+                _pendingLog.Clear();
             }
 
-            _log.SelectionStart = _log.TextLength;
-            _log.SelectionLength = 0;
-            _log.SelectionColor = color;
-            _log.AppendText(text + Environment.NewLine);
-            _log.SelectionColor = _log.ForeColor;
+            bool many = batch.Count > 1 && _log.IsHandleCreated;
+            if (many) SendMessage(_log.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+            try
+            {
+                foreach (var line in batch)
+                {
+                    _log.SelectionStart = _log.TextLength;
+                    _log.SelectionLength = 0;
+                    _log.SelectionColor = LevelColor(line.Key);
+                    _log.AppendText(line.Value + Environment.NewLine);
+                }
+                _log.SelectionColor = _log.ForeColor;
+            }
+            finally
+            {
+                if (many)
+                {
+                    SendMessage(_log.Handle, WM_SETREDRAW, (IntPtr)1, IntPtr.Zero);
+                    _log.Invalidate();
+                }
+            }
             _log.ScrollToCaret();
+        }
+
+        private static Color LevelColor(LogLevel level)
+        {
+            switch (level)
+            {
+                case LogLevel.Ok:    return Theme.LogOk;
+                case LogLevel.Warn:  return Theme.LogWarn;
+                case LogLevel.Error: return Theme.LogError;
+                case LogLevel.Debug: return Theme.LogDebug;
+                default:             return Theme.LogText;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Tamaño, posición y separador de la ventana entre sesiones (HKCU). El técnico
+    /// que agranda el log no tiene que volver a hacerlo cada vez que abre el toolkit.
+    /// </summary>
+    internal static class WindowPlacement
+    {
+        private const string Key = @"Software\Toolkit BPO\Window";
+        public static bool HasSavedSplitter { get; private set; }
+
+        public static void Restore(Form f, SplitContainer split)
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(Key))
+                {
+                    if (k == null) return;
+                    int w = (int)k.GetValue("Width", 0), h = (int)k.GetValue("Height", 0);
+                    int x = (int)k.GetValue("Left", int.MinValue), y = (int)k.GetValue("Top", int.MinValue);
+                    int sd = (int)k.GetValue("Splitter", 0);
+                    bool max = (int)k.GetValue("Maximized", 0) == 1;
+
+                    if (w >= f.MinimumSize.Width && h >= f.MinimumSize.Height && x != int.MinValue)
+                    {
+                        var r = new Rectangle(x, y, w, h);
+                        // Solo si sigue cayendo en alguna pantalla (monitor externo desconectado...).
+                        if (Screen.AllScreens.Any(s => s.WorkingArea.IntersectsWith(r)))
+                        {
+                            f.StartPosition = FormStartPosition.Manual;
+                            f.Bounds = r;
+                        }
+                    }
+                    if (max) f.WindowState = FormWindowState.Maximized;
+                    if (sd > 0)
+                    {
+                        HasSavedSplitter = true;
+                        f.Load += (s, e) =>
+                        {
+                            var v = Math.Max(split.Panel1MinSize, Math.Min(sd, split.Height - split.Panel2MinSize - split.SplitterWidth));
+                            try { split.SplitterDistance = v; } catch (ArgumentException) { }
+                        };
+                    }
+                }
+            }
+            catch { }
+        }
+
+        public static void Save(Form f, SplitContainer split)
+        {
+            try
+            {
+                using (var k = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(Key))
+                {
+                    if (k == null) return;
+                    var b = f.WindowState == FormWindowState.Normal ? f.Bounds : f.RestoreBounds;
+                    k.SetValue("Width", b.Width);  k.SetValue("Height", b.Height);
+                    k.SetValue("Left", b.Left);    k.SetValue("Top", b.Top);
+                    k.SetValue("Maximized", f.WindowState == FormWindowState.Maximized ? 1 : 0);
+                    k.SetValue("Splitter", split.SplitterDistance);
+                }
+            }
+            catch { }
         }
     }
 }

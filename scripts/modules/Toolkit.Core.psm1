@@ -13,6 +13,7 @@ $script:Silent       = $false
 $script:ReportOnly   = $false
 $script:Results      = New-Object System.Collections.ArrayList
 $script:RebootPending = $false
+$script:LogWriter    = $null
 
 #region ---------- Inicializacion ----------
 
@@ -41,6 +42,7 @@ function Initialize-Toolkit {
     $stamp               = Get-Date -Format 'yyyyMMdd-HHmmss'
     $script:LogPath      = Join-Path $Root ('logs\toolkit-{0}-{1}.log' -f $env:COMPUTERNAME, $stamp)
     $script:RollbackPath = Join-Path $Root 'rollback.json'
+    Open-LogWriter
 
     Write-Log ('=' * 78) -Level INFO
     Write-Log ("Toolkit v{0}  |  {1}  |  modo: {2}" -f $script:Version, $env:COMPUTERNAME,
@@ -63,9 +65,46 @@ function Remove-OldLogs {
     } catch { }
 }
 
+function Set-ToolkitMode {
+    <#
+        Fija el modo (solo reporte / desatendido) sin abrir un log nuevo.
+        Sin parametros = interactivo. Lo usa el exe al terminar una ejecucion
+        del orquestador: el runspace es compartido y, si no, una auditoria
+        dejaria el modo "solo reporte" pegado a las acciones de Soporte y
+        Usuarios que vienen despues.
+    #>
+    param([switch]$ReportOnly, [switch]$Silent)
+    $script:ReportOnly = $ReportOnly.IsPresent
+    $script:Silent     = $Silent.IsPresent
+}
+
 #endregion
 
 #region ---------- Logging ----------
+
+# El archivo de log se mantiene abierto (StreamWriter con AutoFlush) en vez de
+# Add-Content por linea: abrir y cerrar el archivo en cada linea cuesta ~1 ms y
+# una auditoria escribe cientos. FileShare.Read: se puede abrir en el Bloc de
+# notas mientras se escribe.
+function Open-LogWriter {
+    Close-LogWriter
+    if (-not $script:LogPath) { return }
+    try {
+        $fs = New-Object System.IO.FileStream($script:LogPath, [System.IO.FileMode]::Append,
+                                              [System.IO.FileAccess]::Write, [System.IO.FileShare]::Read)
+        $script:LogWriter = New-Object System.IO.StreamWriter($fs, (New-Object System.Text.UTF8Encoding($true)))
+        $script:LogWriter.AutoFlush = $true
+    } catch {
+        $script:LogWriter = $null   # se cae a Add-Content
+    }
+}
+
+function Close-LogWriter {
+    if ($script:LogWriter) {
+        try { $script:LogWriter.Dispose() } catch { }
+        $script:LogWriter = $null
+    }
+}
 
 function Write-Log {
     [CmdletBinding()]
@@ -77,7 +116,9 @@ function Write-Log {
 
     $line = '{0} [{1,-5}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
 
-    if ($script:LogPath) {
+    if ($script:LogWriter) {
+        try { $script:LogWriter.WriteLine($line) } catch { }
+    } elseif ($script:LogPath) {
         try { Add-Content -LiteralPath $script:LogPath -Value $line -Encoding UTF8 -ErrorAction SilentlyContinue } catch { }
     }
 
@@ -506,6 +547,62 @@ function Get-ToolkitConfig {
     }
 }
 
+function Get-PhysicalAdapter {
+    <#
+        Adaptadores de red fisicos (incluidos los deshabilitados).
+        Se usa Win32_NetworkAdapter y no Get-NetAdapter porque este ultimo carga
+        el modulo NetAdapter (CDXML) la primera vez: 2-3 s en un equipo normal.
+        La clase WMI da lo mismo en una fraccion, y CIM ya esta caliente por el
+        resto del toolkit.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $rows = @()
+    try {
+        foreach ($a in @(Get-CimInstance Win32_NetworkAdapter -Filter 'PhysicalAdapter=True' -ErrorAction Stop)) {
+            # NetEnabled es $false tambien con el cable desconectado: no sirve para
+            # saber si el adaptador esta deshabilitado. Eso lo dice ConfigManagerErrorCode
+            # 22 (dispositivo deshabilitado) o NetConnectionStatus 5 (hardware deshabilitado).
+            $status = if ([int]$a.ConfigManagerErrorCode -eq 22 -or [int]$a.NetConnectionStatus -eq 5) { 'Disabled' }
+                      else {
+                          switch ([int]$a.NetConnectionStatus) {
+                              2       { 'Up' }
+                              0       { 'Disconnected' }
+                              7       { 'Disconnected' }
+                              default { 'Unknown' }
+                          }
+                      }
+            $desc = [string]$a.Name
+            $rows += [pscustomobject]@{
+                Name           = $(if ($a.NetConnectionID) { [string]$a.NetConnectionID } else { $desc })
+                Description    = $desc
+                Status         = $status
+                IsWireless     = ($desc -match 'Wi-?Fi|Wireless|802\.11|WLAN' -or [string]$a.NetConnectionID -match 'Wi-?Fi|WLAN')
+                # Speed llega como UInt64.MaxValue cuando el enlace esta caido.
+                LinkSpeedBps   = $(if ($a.Speed -and $a.Speed -lt [int64]::MaxValue) { [int64]$a.Speed } else { 0 })
+                MacAddress     = [string]$a.MACAddress
+                InterfaceIndex = [int]$a.InterfaceIndex
+            }
+        }
+    } catch {
+        return $null   # WMI no disponible: el llamador decide que decir
+    }
+    return $rows
+}
+
+function Get-DefaultGateway {
+    <# Puerta de enlace IPv4 por defecto (ruta 0.0.0.0 de menor metrica). Win32_IP4RouteTable: ~30 ms; Get-NetRoute: >1 s la primera vez. #>
+    [CmdletBinding()]
+    param()
+    try {
+        $r = Get-CimInstance Win32_IP4RouteTable -Filter "Destination='0.0.0.0'" -ErrorAction Stop |
+             Sort-Object Metric1 | Select-Object -First 1
+        if ($r) { return [pscustomobject]@{ NextHop = [string]$r.NextHop; InterfaceIndex = [int]$r.InterfaceIndex } }
+    } catch { }
+    return $null
+}
+
 function Get-ToolkitVersion { return $script:Version }
 function Get-ToolkitLogPath { return $script:LogPath }
 function Test-ReportOnly    { return $script:ReportOnly }
@@ -521,5 +618,6 @@ Export-ModuleMember -Function @(
     'Set-RebootPending', 'Test-RebootPendingFlag',
     'Test-MaintenanceWindow', 'Get-ToolkitConfig',
     'Enter-ToolkitInstance', 'Exit-ToolkitInstance',
-    'Get-ToolkitVersion', 'Get-ToolkitLogPath', 'Test-ReportOnly'
+    'Get-ToolkitVersion', 'Get-ToolkitLogPath', 'Test-ReportOnly',
+    'Set-ToolkitMode', 'Close-LogWriter', 'Get-PhysicalAdapter', 'Get-DefaultGateway'
 )

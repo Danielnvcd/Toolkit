@@ -15,7 +15,7 @@
     <Company>danielnvcd</Company>
     <Copyright>Copyright (c) 2026 danielnvcd. Licencia MIT.</Copyright>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Description>Toolkit BPO - utilidades de soporte tecnico para call center: ubicacion, aplicaciones, red, usuarios y reparaciones rapidas.</Description>
+    <Description>Toolkit BPO - utilidades de soporte técnico para call center: ubicación, aplicaciones, red, usuarios y reparaciones rápidas.</Description>
     <Product>Toolkit BPO</Product>
     <AssemblyTitle>Toolkit BPO</AssemblyTitle>
     <!-- Icono del exe (Explorador, barra de tareas). Se genera desde assets\logo.svg con scripts\tools\New-Logo.ps1 -->
