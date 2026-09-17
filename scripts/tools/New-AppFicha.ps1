@@ -98,7 +98,7 @@ if ($file.Extension -ieq '.msi') {
         try {
             $view = $Database.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $Database,
                     @("SELECT Value FROM Property WHERE Property='$Name'"))
-            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            $null = $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)   # sin $null =, su salida vacia se cuela en el return
             $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
             if ($rec) { return $rec.GetType().InvokeMember('StringData', 'GetProperty', $null, $rec, 1) }
         } catch { }
@@ -128,7 +128,7 @@ if ($file.Extension -ieq '.msi') {
         try {
             $view = $db.GetType().InvokeMember('OpenView', 'InvokeMethod', $null, $db,
                     @("SELECT Property FROM Property"))
-            $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
+            $null = $view.GetType().InvokeMember('Execute', 'InvokeMethod', $null, $view, $null)
             while ($true) {
                 $rec = $view.GetType().InvokeMember('Fetch', 'InvokeMethod', $null, $view, $null)
                 if (-not $rec) { break }

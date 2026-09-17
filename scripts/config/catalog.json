@@ -144,6 +144,33 @@
       "notes": "MSI oficial por equipo ('GoTo Machine Installer', ALLUSERS=1, firmado por GoTo Technologies USA): instala la app GoTo para todos los usuarios del PC. La URL es estable (siempre la version actual), asi que cuando GoTo publique una nueva el sha256 y el productCode cambiaran: descargar, Get-FileHash, y leer el ProductCode del MSI (scripts\\tools\\New-AppFicha.ps1 lo hace). minVersion vacio: la app se autoactualiza. Los agentes inician sesion con su cuenta de GoTo la primera vez."
     },
     {
+      "id": "forticlient",
+      "name": "FortiClient VPN (cliente independiente)",
+      "version": "7.4.7.4917",
+      "enabled": false,
+      "installerType": "msi",
+      "source": {
+        "share": "forticlient\\7.4.7.4917\\FortiClientStandaloneSetup_7.4.7.4917.F_x64.zip",
+        "url": "https://filestore.fortinet.com/forticlient/downloads/FortiClientStandaloneSetup_7.4.7.4917.F_x64.zip",
+        "innerFile": "FortiClientStandalone.msi"
+      },
+      "sha256": "cc328a908b9ad038cab0e001dc44b573bfc98b30d949186e0008f27fef45770e",
+      "silentArgs": "/qn /norestart",
+      "properties": {
+        "DESKTOPSHORTCUT": "",
+        "STARTMENUSHORTCUT": ""
+      },
+      "detection": {
+        "method": "productCode",
+        "productCode": "{9AC9E22A-06CA-493A-AF52-4837DC7798EF}",
+        "minVersion": ""
+      },
+      "successCodes": [0, 3010, 1641],
+      "requiresReboot": false,
+      "notes": "Paquete oficial 'FortiClient Standalone VPN' x64 (zip con FortiClientStandalone.msi dentro, firmado por Fortinet; el toolkit lo extrae solo). Es el cliente VPN gratuito, sin EMS. El sha256 es del ZIP, que es lo que se descarga; el MSI interno es E2776C3A2D04AEFD2D98F381FB7B795E2FF49732831011FB2A1986B39E066961. La URL lleva la version: cuando salga otra, coger el enlace 'VPN only > Windows' de https://www.fortinet.com/support/product-downloads (redirige a filestore.fortinet.com), Get-FileHash del zip, y New-AppFicha.ps1 sobre el MSI para el ProductCode nuevo. Se evito el 'FortiClientVPNInstaller.exe' de 5 MB: es un stub que descarga el paquete al instalar y su hash cambia sin cambiar la URL. Instala un driver de red virtual: si Windows pide reiniciar, el toolkit devuelve 3010. Propiedades opcionales: DESKTOPSHORTCUT=1 / STARTMENUSHORTCUT=1 para crear accesos directos (vacio = por defecto del MSI). minVersion vacio: el cliente se autoactualiza si el FortiGate lo permite."
+    },
+
+    {
       "id": "five9",
       "name": "Five9 Softphone (VERIFICAR)",
       "version": "0.0.0",

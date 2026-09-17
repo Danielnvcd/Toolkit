@@ -202,6 +202,49 @@ function Get-AppInstaller {
     return $null
 }
 
+function Expand-InstallerArchive {
+    <#
+        Extrae un zip descargado y devuelve la ruta del instalador que contiene.
+        Con source.innerFile se toma ese nombre; si no, el unico .msi/.exe del zip.
+        Se usa Expand-Archive (PS 5.1) en una carpeta propia para no mezclar con
+        otros paquetes.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Zip,
+        [Parameter(Mandatory)]$App,
+        [Parameter(Mandatory)][string]$WorkDir
+    )
+
+    $dir = Join-Path $WorkDir ($App.id + '-zip')
+    try {
+        if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+        Write-Log "  > Extrayendo $(Split-Path $Zip -Leaf) ..." -Level INFO
+        Expand-Archive -LiteralPath $Zip -DestinationPath $dir -Force -ErrorAction Stop
+    } catch {
+        Write-Log "  x No se pudo extraer el zip: $($_.Exception.Message)" -Level ERROR
+        return $null
+    }
+
+    $innerName = $null
+    if ($App.source.PSObject.Properties.Name -contains 'innerFile' -and $App.source.innerFile) { $innerName = $App.source.innerFile }
+
+    $candidates = @(Get-ChildItem -LiteralPath $dir -Recurse -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Extension -in '.msi', '.exe' })
+    $found = if ($innerName) { $candidates | Where-Object { $_.Name -ieq $innerName } | Select-Object -First 1 }
+             elseif ($candidates.Count -eq 1) { $candidates[0] }
+             else { $null }
+
+    if (-not $found) {
+        Write-Log ("  x El zip no contiene el instalador esperado ({0}). Contiene: {1}" -f
+                   $(if ($innerName) { $innerName } else { 'un unico .msi/.exe' }),
+                   $(if ($candidates.Count) { ($candidates.Name -join ', ') } else { 'ningun .msi/.exe' })) -Level ERROR
+        return $null
+    }
+    Write-Log ("  + Instalador extraido: {0} ({1} MB)" -f $found.Name, [math]::Round($found.Length / 1MB, 1)) -Level OK
+    return $found.FullName
+}
+
 function Test-FileHash256 {
     param([string]$Path, [string]$Expected)
     if (-not $Expected) {
@@ -317,6 +360,20 @@ function Install-CatalogApp {
         return $false
     }
 
+    # --- 3b. Paquete comprimido: el hash se comprueba sobre el zip (lo que se
+    #         descarga); dentro va el MSI/EXE real (source.innerFile o el unico
+    #         instalador que contenga). FortiClient, por ejemplo, se publica asi.
+    $archive = $null
+    if ([IO.Path]::GetExtension($installer) -ieq '.zip') {
+        $inner = Expand-InstallerArchive -Zip $installer -App $App -WorkDir $WorkDir
+        if (-not $inner) {
+            Add-Result -Module 'Apps' -Task $App.name -Status 'FALLO' -Message 'El zip no contiene el instalador esperado'
+            return $false
+        }
+        $archive   = $installer
+        $installer = $inner
+    }
+
     # --- 4. Instalar ---
     $logFile = Join-Path (Join-Path $env:ProgramData 'Toolkit\logs') ("install-{0}-{1}.log" -f $App.id, (Get-Date -Format 'yyyyMMdd-HHmmss'))
     $exe     = $null
@@ -413,8 +470,14 @@ function Install-CatalogApp {
     Add-Result -Module 'Apps' -Task $App.name -Status 'CAMBIADO' -Message $msg
 
     Remove-Item -LiteralPath $installer -Force -ErrorAction SilentlyContinue
+    # Si venia en zip, fuera tambien el zip y la carpeta extraida (200 MB en el caso de FortiClient).
+    if ($archive) {
+        Remove-Item -LiteralPath $archive -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath (Join-Path $WorkDir ($App.id + '-zip')) -Recurse -Force -ErrorAction SilentlyContinue
+    }
     return $true
 }
+
 
 function Install-AppSet {
     <#
@@ -492,7 +555,7 @@ function Show-AppInventory {
 
 Export-ModuleMember -Function @(
     'Get-InstalledPrograms', 'Test-AppInstalled', 'Compare-AppVersion',
-    'Get-AppInstaller', 'Test-FileHash256',
+    'Get-AppInstaller', 'Test-FileHash256', 'Expand-InstallerArchive',
     'Install-CatalogApp', 'Install-AppSet', 'Show-AppInventory',
     'Wait-MsiExecFree', 'Get-MsiExitMeaning'
 )

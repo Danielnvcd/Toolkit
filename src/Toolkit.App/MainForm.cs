@@ -542,7 +542,7 @@ namespace Toolkit.App
             var page = NewPage();
             page.AutoScroll = false;
 
-            _appsHint = Theme.Hint("Aplicaciones del catálogo. Marca las que quieras comprobar o instalar.");
+            _appsHint = Theme.Hint("Aplicaciones del catálogo. Marca las que quieras instalar; Comprobar instaladas revisa todas si no marcas ninguna.");
 
             _apps = new CheckedListBox
             {
@@ -578,10 +578,11 @@ namespace Toolkit.App
         private sealed class AppRow
         {
             public string Id, Name, Version;
-            public bool Enabled;
+            public bool Enabled, HasSource;
             public override string ToString() =>
                 Name + (string.IsNullOrEmpty(Version) || Version == "0.0.0" ? "" : "  v" + Version) +
-                (Enabled ? "" : "   (fuera del despliegue automático: enabled=false; se instala si la marcas)");
+                (!HasSource ? "   — sin instalador: ficha pendiente (solo se puede comprobar)" :
+                 Enabled ? "" : "   (fuera del despliegue automático: enabled=false; se instala si la marcas)");
         }
 
         /// <summary>
@@ -600,8 +601,9 @@ namespace Toolkit.App
                 {
                     var catalog = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
                     var result = SharedHost().Invoke(
-                        "param($Json) foreach ($a in ($Json | ConvertFrom-Json).apps) { " +
-                        "[pscustomobject]@{ Id = [string]$a.id; Name = [string]$a.name; Version = [string]$a.version; Enabled = [bool]$a.enabled } }",
+                        "param($Json) $c = $Json | ConvertFrom-Json; foreach ($a in $c.apps) { " +
+                        "[pscustomobject]@{ Id = [string]$a.id; Name = [string]$a.name; Version = [string]$a.version; Enabled = [bool]$a.enabled; " +
+                        "HasSource = [bool]($a.source.url -or ([bool]$c.packageRepo -and [bool]$a.source.share)) } }",
                         new Dictionary<string, object> { { "Json", catalog } });
 
                     foreach (var r in result)
@@ -612,7 +614,8 @@ namespace Toolkit.App
                             Id      = Convert.ToString(r.Properties["Id"].Value),
                             Name    = Convert.ToString(r.Properties["Name"].Value),
                             Version = Convert.ToString(r.Properties["Version"].Value),
-                            Enabled = Convert.ToBoolean(r.Properties["Enabled"].Value)
+                            Enabled = Convert.ToBoolean(r.Properties["Enabled"].Value),
+                            HasSource = Convert.ToBoolean(r.Properties["HasSource"].Value)
                         });
                     }
                 }
@@ -620,7 +623,8 @@ namespace Toolkit.App
             });
 
             _apps.Items.Clear();
-            foreach (var row in rows) _apps.Items.Add(row, row.Enabled);
+            // Nada marcado por defecto: instalar es una decisión del técnico, no del catálogo.
+            foreach (var row in rows) _apps.Items.Add(row, false);
             _appsLoaded = true;
 
             if (error != null)
@@ -630,11 +634,22 @@ namespace Toolkit.App
             }
             else
             {
-                _appsHint.Text = "Catálogo: " + origin + "   ·   " + rows.Count + " aplicación(es). Marca las que quieras comprobar o instalar.";
+                _appsHint.Text = "Catálogo: " + origin + "   ·   " + rows.Count + " aplicación(es). Marca las que quieras instalar; Comprobar instaladas revisa todas si no marcas ninguna.";
                 _appsHint.ForeColor = Theme.TextMuted;
             }
 
             SetBusy(false, error == null ? "Catálogo cargado." : "Error leyendo el catálogo.", error == null ? StatusKind.Info : StatusKind.Error);
+        }
+
+        private string[] AllApps()
+        {
+            var ids = new List<string>();
+            foreach (var item in _apps.Items)
+            {
+                var row = item as AppRow;
+                if (row != null) ids.Add(row.Id);
+            }
+            return ids.ToArray();
         }
 
         private string[] SelectedApps()
@@ -1195,10 +1210,31 @@ namespace Toolkit.App
             if (module == "apps")
             {
                 apps = SelectedApps();
+                // Comprobar sin nada marcado = comprobar todas; instalar sí exige marcar.
+                if (apps.Length == 0 && reportOnly) apps = AllApps();
                 if (apps.Length == 0)
                 {
-                    Dialogs.Info(this, "Aplicaciones", "Marca al menos una aplicación de la lista.");
+                    Dialogs.Info(this, "Aplicaciones", "Marca las aplicaciones que quieras instalar.");
                     return ExitCancelled;
+                }
+                // Fichas sin instalador (url y share vacíos): mejor avisar aquí que
+                // fallar en el orquestador con "sin origen válido".
+                if (!reportOnly)
+                {
+                    var pending = new List<string>();
+                    foreach (var item in _apps.CheckedItems)
+                    {
+                        var row = item as AppRow;
+                        if (row != null && !row.HasSource) pending.Add(row.Name);
+                    }
+                    if (pending.Count > 0)
+                    {
+                        Dialogs.Warn(this, "Sin instalador",
+                            "Estas fichas del catálogo no tienen instalador (ni URL ni share):\n\n  · " + string.Join("\n  · ", pending) +
+                            "\n\nHay que conseguir el instalador, generar la ficha con scripts\\tools\\New-AppFicha.ps1 y recompilar. " +
+                            "Mientras tanto solo se pueden comprobar.");
+                        return ExitCancelled;
+                    }
                 }
             }
 
