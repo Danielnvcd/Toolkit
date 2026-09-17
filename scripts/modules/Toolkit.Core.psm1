@@ -603,6 +603,88 @@ function Get-DefaultGateway {
     return $null
 }
 
+function Get-ToolkitHistory {
+    <#
+        Ultimas ejecuciones del toolkit en este equipo, a partir de los logs
+        (toolkit-<equipo>-<fecha>.log). Cada log es una sesion: se extraen el
+        modo, los pasos (lineas STEP) y el codigo de salida si lo hubo.
+        Solo lectura; lo usa el boton "Historial" de la GUI.
+    #>
+    [CmdletBinding()]
+    param([string]$Root = $script:Root, [int]$Last = 60)
+
+    $dir = Join-Path $Root 'logs'
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    $files = Get-ChildItem -LiteralPath $dir -Filter 'toolkit-*.log' -ErrorAction SilentlyContinue |
+             Sort-Object LastWriteTime -Descending | Select-Object -First $Last
+
+    foreach ($f in $files) {
+        $mode = ''; $user = ''; $exit = $null; $steps = New-Object System.Collections.ArrayList
+        $errors = 0; $warns = 0
+        try {
+            foreach ($line in [IO.File]::ReadAllLines($f.FullName)) {
+                if ($line -match '\|\s+modo:\s+(.+)$')                    { $mode = $Matches[1].Trim(); continue }
+                if ($line -match 'Ejecutado por:\s+(\S+)')                 { $user = $Matches[1]; continue }
+                if ($line -match '\[STEP \]\s+(?:--- )?(.+?)\s*-*$')       { [void]$steps.Add($Matches[1].Trim()); continue }
+                if ($line -match 'Finalizado con codigo de salida (-?\d+)') { $exit = [int]$Matches[1]; continue }
+                if ($line -match '\[ERROR\]') { $errors++ } elseif ($line -match '\[WARN \]') { $warns++ }
+            }
+        } catch { }
+        # Sesion sin nada que contar (abrir la app y cerrarla): no aporta al historial.
+        if ($steps.Count -eq 0 -and $null -eq $exit -and $errors -eq 0 -and $warns -eq 0) { continue }
+        $stamp = $f.LastWriteTime
+        if ($f.BaseName -match '(\d{8})-(\d{6})$') {
+            try { $stamp = [datetime]::ParseExact($Matches[1] + $Matches[2], 'yyyyMMddHHmmss', $null) } catch { }
+        }
+        [pscustomobject]@{
+            Date     = $stamp
+            Mode     = $mode
+            User     = $user
+            Steps    = ($steps | Select-Object -Unique) -join ' · '
+            ExitCode = $exit
+            Errors   = $errors
+            Warnings = $warns
+            Path     = $f.FullName
+        }
+    }
+}
+
+function Get-PublicIpAddress {
+    <#
+        IP publica con la que sale el equipo a Internet (la que ve Zoho). Dos
+        servicios por si uno falla; 5 s cada uno para no colgar el check-in.
+    #>
+    [CmdletBinding()]
+    param()
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    foreach ($url in 'https://api.ipify.org', 'https://checkip.amazonaws.com') {
+        try {
+            $ip = (Invoke-RestMethod -Uri $url -TimeoutSec 5 -UseBasicParsing -ErrorAction Stop).ToString().Trim()
+            if ($ip -match '^\d{1,3}(\.\d{1,3}){3}$') { return $ip }
+        } catch { }
+    }
+    return $null
+}
+
+function Test-IpInList {
+    <# $true si la IP esta en la lista: entradas sueltas (1.2.3.4) o rangos CIDR (1.2.3.0/24). #>
+    param([Parameter(Mandatory)][string]$Ip, [string[]]$List)
+    try { $addr = [Net.IPAddress]::Parse($Ip) } catch { return $false }
+    $ipBits = [BitConverter]::ToUInt32(($addr.GetAddressBytes()[3..0]), 0)
+    foreach ($entry in @($List | Where-Object { $_ })) {
+        $e = "$entry".Trim()
+        if ($e -notmatch '/') { if ($e -eq $Ip) { return $true }; continue }
+        $net, $len = $e -split '/', 2
+        try {
+            $netBits = [BitConverter]::ToUInt32(([Net.IPAddress]::Parse($net).GetAddressBytes()[3..0]), 0)
+            # 0xFFFFFFFF es Int32 (-1) en PowerShell: hay que operar en 64 bits y recortar.
+            $mask = if ([int]$len -eq 0) { [uint32]0 } else { [uint32]((([uint64][uint32]::MaxValue) -shl (32 - [int]$len)) -band [uint64][uint32]::MaxValue) }
+            if (($ipBits -band $mask) -eq ($netBits -band $mask)) { return $true }
+        } catch { }
+    }
+    return $false
+}
+
 function Get-ToolkitVersion { return $script:Version }
 function Get-ToolkitLogPath { return $script:LogPath }
 function Test-ReportOnly    { return $script:ReportOnly }
@@ -619,5 +701,6 @@ Export-ModuleMember -Function @(
     'Test-MaintenanceWindow', 'Get-ToolkitConfig',
     'Enter-ToolkitInstance', 'Exit-ToolkitInstance',
     'Get-ToolkitVersion', 'Get-ToolkitLogPath', 'Test-ReportOnly',
-    'Set-ToolkitMode', 'Close-LogWriter', 'Get-PhysicalAdapter', 'Get-DefaultGateway'
+    'Set-ToolkitMode', 'Close-LogWriter', 'Get-PhysicalAdapter', 'Get-DefaultGateway',
+    'Get-PublicIpAddress', 'Test-IpInList', 'Get-ToolkitHistory'
 )

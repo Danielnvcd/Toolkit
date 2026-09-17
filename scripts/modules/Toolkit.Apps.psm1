@@ -248,8 +248,11 @@ function Expand-InstallerArchive {
 function Test-FileHash256 {
     param([string]$Path, [string]$Expected)
     if (-not $Expected) {
-        Write-Log '  ! Sin SHA-256 en la ficha: no se puede verificar la integridad del instalador' -Level WARN
-        return $true   # se permite, pero queda registrado
+        # Obligatorio: un catalog.json junto al exe o en el share lo puede editar
+        # cualquiera con acceso y apuntar url a un instalador manipulado. Sin hash
+        # no hay forma de detectarlo, asi que no se instala.
+        Write-Log '  x Sin SHA-256 en la ficha: no se instala sin poder verificar la integridad (Get-FileHash y rellena sha256)' -Level ERROR
+        return $false
     }
     try {
         $actual = (Get-FileHash -LiteralPath $Path -Algorithm SHA256 -ErrorAction Stop).Hash
@@ -342,6 +345,23 @@ function Install-CatalogApp {
     if (Test-ReportOnly) {
         Write-Log '  ! NO instalado -- MODO REPORTE, no se instala' -Level WARN
         Add-Result -Module 'Apps' -Task $App.name -Status 'AVISO' -Message 'Falta instalar'
+        return $false
+    }
+
+    # --- 1b. Requisitos de la ficha ANTES de descargar nada: sha256 presente y
+    #         descarga solo por HTTPS. Evita bajar 300 MB para luego rechazarlos,
+    #         y cierra la puerta a un catalogo editado con una url http:// que un
+    #         proxy en el camino pueda sustituir.
+    $expected = if ($App.PSObject.Properties.Name -contains 'sha256') { "$($App.sha256)".Trim() } else { '' }
+    if (-not $expected) {
+        Write-Log "  x $($App.name): la ficha no tiene sha256. No se instala sin verificar la integridad." -Level ERROR
+        Add-Result -Module 'Apps' -Task $App.name -Status 'FALLO' -Message 'Ficha sin sha256'
+        return $false
+    }
+    $url = if ($App.source.PSObject.Properties.Name -contains 'url') { "$($App.source.url)".Trim() } else { '' }
+    if ($url -and $url -notmatch '^https://') {
+        Write-Log "  x $($App.name): la url de descarga no es HTTPS ($url). Solo se aceptan descargas cifradas." -Level ERROR
+        Add-Result -Module 'Apps' -Task $App.name -Status 'FALLO' -Message 'URL de descarga no HTTPS'
         return $false
     }
 

@@ -17,7 +17,9 @@
       "browserPolicy": true,
       "urls": [ "https://people.zoho.com", "https://accounts.zoho.com" ],
       "maxAccuracyMeters": 500,
-      "_maxAccuracyMeters_comment": "Precision maxima aceptable. Ajustar al radio de la geovalla configurada en Zoho People."
+      "_maxAccuracyMeters_comment": "Precision maxima aceptable. Ajustar al radio de la geovalla configurada en Zoho People.",
+      "allowedPublicIps": [],
+      "_allowedPublicIps_comment": "IPs publicas de las sedes autorizadas en Zoho People (restriccion por IP). IPs sueltas o rangos CIDR: [ \"203.0.113.10\", \"198.51.100.0/24\" ]. Vacio = solo se muestra la IP publica del equipo en 'Comprobar check-in' para que la anotes. Con lista, un equipo que salga por otra IP (VPN, 4G, otra sede) da NO LISTO."
     }
   },
 

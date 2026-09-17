@@ -49,7 +49,7 @@ namespace Toolkit.App
         private CheckBox _chkLockDown, _chkBrowsers, _chkGetPosition;
 
         // Página Aplicaciones
-        private CheckedListBox _apps;
+        private ListView _apps;
         private Label _appsHint;
         private bool _appsLoaded;
 
@@ -215,6 +215,7 @@ namespace Toolkit.App
             };
             _content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface };
 
+            AddPage("Alta de puesto", Theme.GlyphSetup,    BuildSetupPage());
             AddPage("Ubicación",    Theme.GlyphLocation, BuildLocationPage());
             _pageApps  = AddPage("Aplicaciones", Theme.GlyphApps, BuildAppsPage());
             AddPage("Red",          Theme.GlyphNetwork,  BuildNetworkPage());
@@ -251,6 +252,8 @@ namespace Toolkit.App
                 AutoSizeMode = AutoSizeMode.GrowAndShrink, Padding = new Padding(0, 4, 6, 0), WrapContents = false
             };
             var bLogs  = SmallTool("Abrir carpeta de logs", Theme.GlyphFolder);
+            var bHist  = SmallTool("Historial", Theme.GlyphHistory);
+            bHist.Click += (s, e) => ShowHistory();
             var bClear = SmallTool("Limpiar", Theme.GlyphClear);
             var bCopy  = SmallTool("Copiar", Theme.GlyphCopy);
             bCopy.Click += (s, e) =>
@@ -264,7 +267,7 @@ namespace Toolkit.App
                 var dir = System.IO.Path.Combine(_args.Root, "logs");
                 try { System.Diagnostics.Process.Start("explorer.exe", System.IO.Directory.Exists(dir) ? dir : _args.Root); } catch { }
             };
-            logTools.Controls.AddRange(new Control[] { bLogs, bClear, bCopy });
+            logTools.Controls.AddRange(new Control[] { bLogs, bHist, bClear, bCopy });
             logHead.Controls.AddRange(new Control[] { logTitle, logTools });
 
             var logCard = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(1) };
@@ -334,7 +337,7 @@ namespace Toolkit.App
             return index;
         }
 
-        private readonly string[] _pageGlyphs = { Theme.GlyphLocation, Theme.GlyphApps, Theme.GlyphNetwork, Theme.GlyphSupport, Theme.GlyphUsers };
+        private readonly string[] _pageGlyphs = { Theme.GlyphSetup, Theme.GlyphLocation, Theme.GlyphApps, Theme.GlyphNetwork, Theme.GlyphSupport, Theme.GlyphUsers };
 
         private async void SelectPage(int index)
         {
@@ -544,11 +547,25 @@ namespace Toolkit.App
 
             _appsHint = Theme.Hint("Aplicaciones del catálogo. Marca las que quieras instalar; Comprobar instaladas revisa todas si no marcas ninguna.");
 
-            _apps = new CheckedListBox
+            // Lista con casillas y estado por fila: instalada / falta / desactualizada /
+            // sin instalador. El estado se calcula al cargar (solo lee el registro).
+            _apps = new ListView
             {
-                Dock = DockStyle.Fill, CheckOnClick = true, IntegralHeight = false,
-                HorizontalScrollbar = true, BorderStyle = BorderStyle.FixedSingle,
-                Font = Theme.Body, Margin = new Padding(0, 0, 0, 10)
+                Dock = DockStyle.Fill, View = View.Details, CheckBoxes = true, FullRowSelect = true,
+                MultiSelect = false, HideSelection = false, GridLines = false,
+                BorderStyle = BorderStyle.FixedSingle, Font = Theme.Body, Margin = new Padding(0, 0, 0, 10)
+            };
+            _apps.Columns.Add("Aplicación", Theme.Px(300));
+            _apps.Columns.Add("Catálogo", Theme.Px(90));
+            _apps.Columns.Add("Estado", Theme.Px(150));
+            _apps.Columns.Add("Instalada", Theme.Px(100));
+            _apps.Columns.Add("Nota", Theme.Px(160));
+            _apps.Resize += (s, e) => StretchLastColumn(_apps);
+            // Doble clic en la fila = marcar/desmarcar, como en la lista antigua.
+            _apps.MouseDoubleClick += (s, e) =>
+            {
+                var hit = _apps.HitTest(e.Location);
+                if (hit.Item != null) hit.Item.Checked = !hit.Item.Checked;
             };
 
             var apply   = NewButton("Instalar seleccionadas", Theme.ButtonKind.Success,   Theme.GlyphDownload);
@@ -557,7 +574,11 @@ namespace Toolkit.App
 
             refresh.Click += async (s, e) => await RefreshApps();
             audit.Click   += async (s, e) => await Execute("apps", reportOnly: true);
-            apply.Click   += async (s, e) => await Execute("apps", reportOnly: false);
+            apply.Click   += async (s, e) =>
+            {
+                var code = await Execute("apps", reportOnly: false);
+                if (code != ExitCancelled) await RefreshApps();   // refleja lo instalado
+            };
 
             // Tres filas: texto (auto), lista (todo el resto), botones (auto).
             var grid = NewStack();
@@ -577,54 +598,84 @@ namespace Toolkit.App
 
         private sealed class AppRow
         {
-            public string Id, Name, Version;
-            public bool Enabled, HasSource;
-            public override string ToString() =>
-                Name + (string.IsNullOrEmpty(Version) || Version == "0.0.0" ? "" : "  v" + Version) +
-                (!HasSource ? "   — sin instalador: ficha pendiente (solo se puede comprobar)" :
-                 Enabled ? "" : "   (fuera del despliegue automático: enabled=false; se instala si la marcas)");
+            public string Id, Name, Version, InstalledVersion;
+            public bool Enabled, HasSource, Installed, Outdated;
         }
 
-        /// <summary>
-        /// Lee las apps del catálogo con el runspace compartido.
-        /// Se hace en PowerShell (ConvertFrom-Json) para no meter un parser JSON en el exe.
-        /// </summary>
+        // Consulta al catálogo + detección. Se hace en PowerShell (ConvertFrom-Json y
+        // Test-AppInstalled del módulo) para no duplicar en el exe ni el parser JSON
+        // ni la lógica de detección. Si la app está pero por debajo de minVersion,
+        // Test-AppInstalled la da como "no instalada": se repite sin minVersion para
+        // distinguir "falta" de "desactualizada".
+        private const string AppsQuery =
+            "param($Json) $c = $Json | ConvertFrom-Json; Get-InstalledPrograms -Refresh | Out-Null; " +
+            "foreach ($a in $c.apps) { " +
+            "  $d = Test-AppInstalled -App $a; $old = $false; $fv = ''; " +
+            "  if (-not $d.Installed -and $a.detection.minVersion) { " +
+            "    $tmp = $a | ConvertTo-Json -Depth 6 | ConvertFrom-Json; $tmp.detection.minVersion = ''; " +
+            "    $d2 = Test-AppInstalled -App $tmp; if ($d2.Installed) { $old = $true; $fv = [string]$d2.Version } } " +
+            "  [pscustomobject]@{ Id = [string]$a.id; Name = [string]$a.name; Version = [string]$a.version; Enabled = [bool]$a.enabled; " +
+            "    HasSource = [bool]($a.source.url -or ([bool]$c.packageRepo -and [bool]$a.source.share)); " +
+            "    Installed = [bool]$d.Installed; InstalledVersion = $(if ($d.Installed) { [string]$d.Version } else { $fv }); Outdated = $old } }";
+
+        /// <summary>Lee el catálogo y comprueba qué hay instalado (solo registro, no toca nada).</summary>
         private async Task RefreshApps()
         {
-            SetBusy(true, "Leyendo catálogo de aplicaciones...");
+            SetBusy(true, "Leyendo catálogo y comprobando aplicaciones...");
             var rows = new List<AppRow>();
             string origin = null, error = null;
+            // Conservar lo marcado al recargar (tras instalar, por ejemplo).
+            var checkedIds = new HashSet<string>(SelectedApps());
 
             await Task.Run(() =>
             {
                 try
                 {
                     var catalog = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
-                    var result = SharedHost().Invoke(
-                        "param($Json) $c = $Json | ConvertFrom-Json; foreach ($a in $c.apps) { " +
-                        "[pscustomobject]@{ Id = [string]$a.id; Name = [string]$a.name; Version = [string]$a.version; Enabled = [bool]$a.enabled; " +
-                        "HasSource = [bool]($a.source.url -or ([bool]$c.packageRepo -and [bool]$a.source.share)) } }",
-                        new Dictionary<string, object> { { "Json", catalog } });
-
+                    var result = SharedHost().Invoke(AppsQuery, new Dictionary<string, object> { { "Json", catalog } });
                     foreach (var r in result)
                     {
                         if (r == null) continue;
                         rows.Add(new AppRow
                         {
-                            Id      = Convert.ToString(r.Properties["Id"].Value),
-                            Name    = Convert.ToString(r.Properties["Name"].Value),
-                            Version = Convert.ToString(r.Properties["Version"].Value),
-                            Enabled = Convert.ToBoolean(r.Properties["Enabled"].Value),
-                            HasSource = Convert.ToBoolean(r.Properties["HasSource"].Value)
+                            Id        = Prop(r, "Id"),
+                            Name      = Prop(r, "Name"),
+                            Version   = Prop(r, "Version"),
+                            Enabled   = PropBool(r, "Enabled"),
+                            HasSource = PropBool(r, "HasSource"),
+                            Installed = PropBool(r, "Installed"),
+                            InstalledVersion = Prop(r, "InstalledVersion"),
+                            Outdated  = PropBool(r, "Outdated")
                         });
                     }
                 }
                 catch (Exception ex) { error = ex.Message; }
             });
 
+            _apps.BeginUpdate();
             _apps.Items.Clear();
-            // Nada marcado por defecto: instalar es una decisión del técnico, no del catálogo.
-            foreach (var row in rows) _apps.Items.Add(row, false);
+            int installed = 0;
+            foreach (var row in rows)
+            {
+                string estado; Color color;
+                if (row.Installed)     { estado = "Instalada";      color = Theme.Ok; installed++; }
+                else if (row.Outdated) { estado = "Desactualizada"; color = Theme.Warn; }
+                else                   { estado = "No instalada";   color = Theme.TextMuted; }
+                var nota = !row.HasSource ? "sin instalador (ficha pendiente)" : row.Enabled ? "" : "fuera del despliegue automático";
+                var item = new ListViewItem(new[]
+                {
+                    row.Name,
+                    string.IsNullOrEmpty(row.Version) || row.Version == "0.0.0" ? "–" : "v" + row.Version,
+                    estado,
+                    string.IsNullOrEmpty(row.InstalledVersion) ? (row.Installed ? "sí" : "–") : "v" + row.InstalledVersion,
+                    nota
+                }) { Tag = row, UseItemStyleForSubItems = false, Checked = checkedIds.Contains(row.Id) };
+                item.SubItems[2].ForeColor = color;
+                item.SubItems[4].ForeColor = row.HasSource ? Theme.TextMuted : Theme.Warn;
+                _apps.Items.Add(item);
+            }
+            _apps.EndUpdate();
+            StretchLastColumn(_apps);
             _appsLoaded = true;
 
             if (error != null)
@@ -634,19 +685,21 @@ namespace Toolkit.App
             }
             else
             {
-                _appsHint.Text = "Catálogo: " + origin + "   ·   " + rows.Count + " aplicación(es). Marca las que quieras instalar; Comprobar instaladas revisa todas si no marcas ninguna.";
+                _appsHint.Text = "Catálogo: " + origin + "   ·   " + installed + " de " + rows.Count + " instaladas. " +
+                                 "Marca las que quieras instalar; Comprobar instaladas revisa todas si no marcas ninguna.";
                 _appsHint.ForeColor = Theme.TextMuted;
             }
 
-            SetBusy(false, error == null ? "Catálogo cargado." : "Error leyendo el catálogo.", error == null ? StatusKind.Info : StatusKind.Error);
+            SetBusy(false, error == null ? installed + " de " + rows.Count + " aplicaciones del catálogo instaladas." : "Error leyendo el catálogo.",
+                    error == null ? StatusKind.Info : StatusKind.Error);
         }
 
         private string[] AllApps()
         {
             var ids = new List<string>();
-            foreach (var item in _apps.Items)
+            foreach (ListViewItem item in _apps.Items)
             {
-                var row = item as AppRow;
+                var row = item.Tag as AppRow;
                 if (row != null) ids.Add(row.Id);
             }
             return ids.ToArray();
@@ -655,9 +708,9 @@ namespace Toolkit.App
         private string[] SelectedApps()
         {
             var ids = new List<string>();
-            foreach (var item in _apps.CheckedItems)
+            foreach (ListViewItem item in _apps.CheckedItems)
             {
-                var row = item as AppRow;
+                var row = item.Tag as AppRow;
                 if (row != null) ids.Add(row.Id);
             }
             return ids.ToArray();
@@ -1222,9 +1275,9 @@ namespace Toolkit.App
                 if (!reportOnly)
                 {
                     var pending = new List<string>();
-                    foreach (var item in _apps.CheckedItems)
+                    foreach (ListViewItem item in _apps.CheckedItems)
                     {
-                        var row = item as AppRow;
+                        var row = item.Tag as AppRow;
                         if (row != null && !row.HasSource) pending.Add(row.Name);
                     }
                     if (pending.Count > 0)
@@ -1264,43 +1317,12 @@ namespace Toolkit.App
             }
 
             // Las opciones se leen aquí, en el hilo de la UI, antes de irse al hilo de trabajo.
-            var options = new RunOptions
-            {
-                Modules     = new[] { module },
-                Apps        = apps,
-                SharePath   = _args.SharePath,
-                Root        = _args.Root,
-                ReportOnly  = reportOnly,
-                Silent      = false,
-                NoLockDown  = !_chkLockDown.Checked,
-                NoBrowsers  = !_chkBrowsers.Checked,
-                CheckIn     = checkIn,
-                GetPosition = _chkGetPosition.Checked,
-                PingCount   = (int)_pingCount.Value,
-                // El técnico está delante: no tiene sentido aplazar a la ventana nocturna.
-                IgnoreMaintenanceWindow = true
-            };
+            var options = BuildRunOptions(module, reportOnly, checkIn, apps);
 
             SetBusy(true, checkIn ? "Comprobando el check-in de Zoho..." : reportOnly ? "Auditando..." : "Aplicando cambios...");
             if (!keepLog) _log.Clear();
 
-            var exitCode = await Task.Run(() =>
-            {
-                try
-                {
-                    string origin;
-                    options.CatalogJson = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
-                    Append(LogLevel.Debug, "Catálogo: " + origin);
-
-                    // Runspace compartido: no se paga el arranque (runspace + módulos) en cada clic.
-                    return SharedHost().Run(options);
-                }
-                catch (Exception ex)
-                {
-                    Append(LogLevel.Error, "ERROR: " + ex.Message);
-                    return Program.ExitGeneric;
-                }
-            });
+            var exitCode = await RunModule(options);
 
             if (exitCode == ScriptHost.ExitCancelled)
             {
@@ -1319,6 +1341,199 @@ namespace Toolkit.App
                 Dialogs.Warn(this, checkIn ? "Check-in de Zoho" : "Resultado", verdict + "\n\nRevisa la salida para el detalle.");
             }
             return exitCode;
+        }
+
+        private RunOptions BuildRunOptions(string module, bool reportOnly, bool checkIn, string[] apps)
+        {
+            return new RunOptions
+            {
+                Modules     = new[] { module },
+                Apps        = apps,
+                SharePath   = _args.SharePath,
+                Root        = _args.Root,
+                ReportOnly  = reportOnly,
+                Silent      = false,
+                NoLockDown  = !_chkLockDown.Checked,
+                NoBrowsers  = !_chkBrowsers.Checked,
+                CheckIn     = checkIn,
+                GetPosition = _chkGetPosition.Checked,
+                PingCount   = (int)_pingCount.Value,
+                // El técnico está delante: no tiene sentido aplazar a la ventana nocturna.
+                IgnoreMaintenanceWindow = true
+            };
+        }
+
+        /// <summary>Ejecuta el orquestador con esas opciones en el runspace compartido. Sin UI: quien llama pone estado y confirmaciones.</summary>
+        private Task<int> RunModule(RunOptions options)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    string origin;
+                    options.CatalogJson = EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
+                    Append(LogLevel.Debug, "Catálogo: " + origin);
+                    // Runspace compartido: no se paga el arranque (runspace + módulos) en cada clic.
+                    return SharedHost().Run(options);
+                }
+                catch (Exception ex)
+                {
+                    Append(LogLevel.Error, "ERROR: " + ex.Message);
+                    return Program.ExitGeneric;
+                }
+            });
+        }
+
+        // -------------------------------------------------------------------
+        //  Alta de puesto: todo lo que un equipo nuevo necesita, en un clic.
+        //  Orquesta lo que ya existe (ubicación, micro/cámara, energía, hora,
+        //  apps del catálogo, check-in y reporte); cada paso es opcional.
+        // -------------------------------------------------------------------
+        private CheckBox _stLocation, _stMedia, _stPower, _stTime, _stApps, _stCheckIn, _stReport;
+
+        private Panel BuildSetupPage()
+        {
+            var page = NewPage();
+            var stack = NewStack();
+
+            stack.Controls.Add(Theme.Hint(
+                "Deja un equipo nuevo listo para un agente en un solo paso: aplica cada bloque en orden, con una sola confirmación, " +
+                "y termina con el reporte para el ticket. Desmarca lo que no aplique en esta sede."));
+
+            _stLocation = Theme.Check("Activar la ubicación (servicio, políticas, todos los usuarios y navegadores; con las opciones de la página Ubicación)", true);
+            _stMedia    = Theme.Check("Permitir micrófono y cámara para todos los usuarios y apps de escritorio", true);
+            _stPower    = Theme.Check("No suspender el equipo con corriente (la pantalla se apaga a los 15 min)", true);
+            _stTime     = Theme.Check("Sincronizar la hora con NTP", true);
+            _stApps     = Theme.Check("Instalar las aplicaciones del catálogo marcadas como enabled=true que falten", true);
+            _stCheckIn  = Theme.Check("Comprobar el check-in de Zoho al terminar", true);
+            _stReport   = Theme.Check("Guardar el reporte para el ticket y abrir la carpeta", true);
+            foreach (var c in new[] { _stLocation, _stMedia, _stPower, _stTime, _stApps, _stCheckIn, _stReport }) stack.Controls.Add(c);
+
+            var run = NewButton("Preparar este equipo", Theme.ButtonKind.Success, Theme.GlyphPlay);
+            run.Click += (s, e) => RunSetup();
+            stack.Controls.Add(NewButtonRow(run));
+
+            page.Controls.Add(stack);
+            return page;
+        }
+
+        private sealed class SetupStep
+        {
+            public string Name;
+            public Func<Task<int>> Run;   // 0 = OK, 3010 = OK con reinicio, otro = fallo, ScriptHost.ExitCancelled = cancelado
+        }
+
+        private async void RunSetup()
+        {
+            var steps = new List<SetupStep>();
+            if (_stLocation.Checked) steps.Add(new SetupStep { Name = "Ubicación",            Run = () => RunModule(BuildRunOptions("location", false, false, null)) });
+            if (_stMedia.Checked)    steps.Add(new SetupStep { Name = "Micrófono y cámara",   Run = () => RunSupportStep("Enable-MediaConsent | Out-Null") });
+            if (_stPower.Checked)    steps.Add(new SetupStep { Name = "Energía",              Run = () => RunSupportStep("Set-NoSleepPower | Out-Null") });
+            if (_stTime.Checked)     steps.Add(new SetupStep { Name = "Hora",                 Run = () => RunSupportStep("Sync-SystemTime | Out-Null") });
+            if (_stApps.Checked)     steps.Add(new SetupStep { Name = "Aplicaciones",         Run = () => RunModule(BuildRunOptions("apps", false, false, null)) });
+            if (_stCheckIn.Checked)  steps.Add(new SetupStep { Name = "Check-in de Zoho",     Run = () => RunModule(BuildRunOptions("location", true, true, null)) });
+            if (steps.Count == 0 && !_stReport.Checked)
+            {
+                Dialogs.Info(this, "Alta de puesto", "Marca al menos un paso.");
+                return;
+            }
+
+            var what = "Se va a preparar este equipo. Pasos:\n\n  · " +
+                       string.Join("\n  · ", steps.ConvertAll(x => x.Name)) + (_stReport.Checked ? "\n  · Reporte para el ticket" : "") +
+                       "\n\nLos cambios de registro son reversibles con 'Revertir'; las aplicaciones instaladas no.";
+            if (!Dialogs.Confirm(this, "Alta de puesto", what, "Preparar equipo")) return;
+
+            _log.Clear();
+            var results = new List<string>();
+            bool anyFail = false, cancelled = false, reboot = false;
+            int n = 0;
+            foreach (var step in steps)
+            {
+                n++;
+                SetBusy(true, "Alta de puesto " + n + "/" + steps.Count + ": " + step.Name + "...");
+                Append(LogLevel.Info, "");
+                Append(LogLevel.Info, "════════ ALTA DE PUESTO · paso " + n + "/" + steps.Count + ": " + step.Name.ToUpperInvariant() + " ════════");
+                var code = await step.Run();
+                if (code == ScriptHost.ExitCancelled) { cancelled = true; results.Add("■ " + step.Name + ": cancelado"); break; }
+                if (code == Program.ExitRebootNeeded) { reboot = true; results.Add("✓ " + step.Name + " (requiere reinicio)"); continue; }
+                if (code == 0) results.Add("✓ " + step.Name);
+                else { anyFail = true; results.Add("✗ " + step.Name + ": " + DescribeExit(code)); }
+            }
+
+            string reportPath = null;
+            if (_stReport.Checked && !cancelled)
+            {
+                SetBusy(true, "Alta de puesto: guardando el reporte...");
+                reportPath = await RunSupportValue("param($Root) Export-SupportReport -Root $Root",
+                    new Dictionary<string, object> { { "Root", _args.Root } });
+                results.Add(reportPath != null ? "✓ Reporte: " + reportPath : "✗ Reporte: no se pudo guardar");
+            }
+
+            var summary = string.Join("\n", results);
+            if (cancelled)
+                SetBusy(false, "Alta de puesto cancelada.", StatusKind.Warn);
+            else if (anyFail)
+                SetBusy(false, "Alta de puesto terminada con fallos. Revisa la salida.", StatusKind.Error);
+            else
+                SetBusy(false, reboot ? "Alta de puesto terminada. Requiere reinicio." : "Alta de puesto terminada.", reboot ? StatusKind.Warn : StatusKind.Ok);
+
+            Append(LogLevel.Info, "");
+            Append(anyFail ? LogLevel.Warn : LogLevel.Ok, "RESUMEN DEL ALTA DE PUESTO");
+            foreach (var r in results) Append(r.StartsWith("✗") ? LogLevel.Error : r.StartsWith("■") ? LogLevel.Warn : LogLevel.Ok, "  " + r);
+
+            if (!cancelled)
+            {
+                if (anyFail) Dialogs.Warn(this, "Alta de puesto", "Terminado con fallos:\n\n" + summary + "\n\nRevisa la salida para el detalle.");
+                else Dialogs.Info(this, "Alta de puesto", (reboot ? "Terminado. El equipo requiere reinicio.\n\n" : "Equipo listo.\n\n") + summary);
+                if (!string.IsNullOrEmpty(reportPath) && System.IO.File.Exists(reportPath))
+                {
+                    try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + reportPath + "\""); } catch { }
+                }
+            }
+            if (_appsLoaded) await RefreshApps();
+        }
+
+        /// <summary>Acción suelta de Soporte como paso del alta: 0 si no lanzó, ExitCancelled si se paró, 1 si falló.</summary>
+        private Task<int> RunSupportStep(string script)
+        {
+            return Task.Run(() =>
+            {
+                try { SharedHost().Invoke(script); return 0; }
+                catch (PipelineStoppedException) { return ScriptHost.ExitCancelled; }
+                catch (Exception ex) { Append(LogLevel.Error, "ERROR: " + ex.Message); return 1; }
+            });
+        }
+
+        /// <summary>Como RunSupportStep pero devuelve el último valor de salida (ruta del reporte). Null si falló.</summary>
+        private Task<string> RunSupportValue(string script, IDictionary<string, object> parameters)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    var res = SharedHost().Invoke(script, parameters);
+                    return (res != null && res.Count > 0 && res[res.Count - 1] != null) ? res[res.Count - 1].BaseObject?.ToString() : null;
+                }
+                catch (Exception ex) { Append(LogLevel.Error, "ERROR: " + ex.Message); return null; }
+            });
+        }
+
+        // -------------------------------------------------------------------
+        //  Historial: últimas ejecuciones en este equipo (a partir de los logs)
+        // -------------------------------------------------------------------
+        private async void ShowHistory()
+        {
+            SetBusy(true, "Leyendo el historial...");
+            var rows = new List<PSObject>();
+            string error = null;
+            await Task.Run(() =>
+            {
+                try { foreach (var o in SharedHost().Invoke("param($Root) Get-ToolkitHistory -Root $Root -Last 100", new Dictionary<string, object> { { "Root", _args.Root } })) if (o != null) rows.Add(o); }
+                catch (Exception ex) { error = ex.Message; }
+            });
+            SetBusy(false, error == null ? rows.Count + " ejecuciones en el historial." : "No se pudo leer el historial.", error == null ? StatusKind.Info : StatusKind.Error);
+            if (error != null) { Dialogs.Warn(this, "Historial", error); return; }
+            using (var dlg = new HistoryDialog(rows)) dlg.ShowDialog(this);
         }
 
         private async void Rollback()

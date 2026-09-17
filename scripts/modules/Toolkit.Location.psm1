@@ -703,11 +703,13 @@ function Test-CheckInReadiness {
           3. Adaptador Wi-Fi             (sin el, la posicion es por IP: km de error)
           4. Posicion real y precision   (Test-LocationApi -GetPosition)
           5. Conectividad a Zoho y al servicio de posicionamiento de Microsoft
+          6. IP publica del equipo (si Zoho usa restriccion por IP, es lo decisivo)
         Devuelve un objeto con Ready (bool), Issues y el detalle de cada paso.
     #>
     [CmdletBinding()]
     param(
         [string[]]$Urls = $script:DefaultCheckInUrls,
+        [string[]]$AllowedPublicIps = @(),
         [int]$MaxAccuracyMeters = 500
     )
 
@@ -715,7 +717,7 @@ function Test-CheckInReadiness {
     $warns  = @()
 
     # 1. Windows
-    Write-Log '1/5  Capas de ubicacion de Windows' -Level INFO
+    Write-Log '1/6  Capas de ubicacion de Windows' -Level INFO
     $state = Test-LocationState
     if ($state.Compliant) { Write-Log '  + Servicio, interruptor, consentimiento y politicas correctos' -Level OK }
     else {
@@ -724,7 +726,7 @@ function Test-CheckInReadiness {
     }
 
     # 2. Navegadores
-    Write-Log '2/5  Permiso de ubicacion en los navegadores' -Level INFO
+    Write-Log '2/6  Permiso de ubicacion en los navegadores' -Level INFO
     $browsers = @(Test-BrowserGeolocation -Urls $Urls)
     $anyInstalled = $false
     foreach ($b in $browsers) {
@@ -746,7 +748,7 @@ function Test-CheckInReadiness {
     }
 
     # 3. Wi-Fi
-    Write-Log '3/5  Adaptador Wi-Fi (fuente de posicion sin GPS)' -Level INFO
+    Write-Log '3/6  Adaptador Wi-Fi (fuente de posicion sin GPS)' -Level INFO
     $wifi = $null
     $adapters = Get-PhysicalAdapter
     if ($null -ne $adapters) { $wifi = @($adapters | Where-Object { $_.IsWireless }) }
@@ -771,7 +773,7 @@ function Test-CheckInReadiness {
     }
 
     # 4. Posicion real
-    Write-Log '4/5  Posicion real desde la API de Windows (hasta 20 s)' -Level INFO
+    Write-Log '4/6  Posicion real desde la API de Windows (hasta 20 s)' -Level INFO
     $api = Test-LocationApi -GetPosition -MaxAccuracyMeters $MaxAccuracyMeters
     if (-not $api.ApiAvailable) {
         $warns += 'No se pudo consultar la API de ubicacion (WinRT no disponible en esta sesion)'
@@ -784,7 +786,7 @@ function Test-CheckInReadiness {
     }
 
     # 5. Conectividad
-    Write-Log '5/5  Conectividad (DNS + puerto 443)' -Level INFO
+    Write-Log '5/6  Conectividad (DNS + puerto 443)' -Level INFO
     $endpoints = @()
     $hosts = @($Urls | ForEach-Object { try { ([uri]$_).Host } catch { $_ } } | Where-Object { $_ } | Select-Object -Unique)
     $hosts += $script:PositioningHost
@@ -802,6 +804,26 @@ function Test-CheckInReadiness {
                 $issues += "Sin acceso a $h`:443 -- el navegador no llegara a Zoho ($($e.Error))"
             }
         }
+    }
+
+    # 6. IP publica. Con sobremesa por Ethernet (sin Wi-Fi) la geovalla falla por
+    #    precision, y lo que de verdad decide el check-in es la restriccion por IP
+    #    de Zoho People. Si el catalogo trae la lista de IPs de las sedes, se
+    #    comprueba; si no, al menos se muestra para que el admin la anote en Zoho.
+    Write-Log '6/6  IP publica del equipo (restriccion por IP en Zoho)' -Level INFO
+    $publicIp = Get-PublicIpAddress
+    if (-not $publicIp) {
+        $warns += 'No se pudo averiguar la IP publica (sin salida a Internet o proxy que la bloquea)'
+        Write-Log '  ! No se pudo averiguar la IP publica' -Level WARN
+    } elseif ($AllowedPublicIps.Count -eq 0) {
+        Write-Log "  i IP publica: $publicIp  (sin lista de IPs autorizadas en el catalogo: location.checkIn.allowedPublicIps)" -Level INFO
+        Write-Log '    Si Zoho People usa restriccion por IP, esta es la IP que hay que autorizar para esta sede.' -Level INFO
+    } elseif (Test-IpInList -Ip $publicIp -List $AllowedPublicIps) {
+        Write-Log "  + IP publica $publicIp esta en la lista autorizada de la empresa" -Level OK
+    } else {
+        $issues += "IP publica $publicIp NO esta en la lista autorizada ($($AllowedPublicIps -join ', ')): con restriccion por IP en Zoho el check-in se rechaza"
+        Write-Log "  x IP publica $publicIp NO esta en la lista autorizada: $($AllowedPublicIps -join ', ')" -Level ERROR
+        Write-Log '    O el equipo sale por otra conexion (VPN, 4G, proxy) o falta anadir esta IP en Zoho y en el catalogo.' -Level INFO
     }
 
     # Veredicto
@@ -828,6 +850,7 @@ function Test-CheckInReadiness {
         WifiAdapters = @($wifi | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Status = "$($_.Status)" } })
         Api       = $api
         Endpoints = $endpoints
+        PublicIp  = $publicIp
     }
 }
 

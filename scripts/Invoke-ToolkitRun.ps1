@@ -80,11 +80,13 @@ function Invoke-ModuleLocation {
     $checkInUrls = $null
     $maxAccuracy = 500
     $browserPolicy = $true
+    $allowedIps  = @()
     if ($config.location.PSObject.Properties.Name -contains 'checkIn' -and $config.location.checkIn) {
         $ci = $config.location.checkIn
         if ($ci.PSObject.Properties.Name -contains 'urls' -and $ci.urls)               { $checkInUrls = @($ci.urls) }
         if ($ci.PSObject.Properties.Name -contains 'maxAccuracyMeters' -and $ci.maxAccuracyMeters) { $maxAccuracy = [int]$ci.maxAccuracyMeters }
         if ($ci.PSObject.Properties.Name -contains 'browserPolicy')                    { $browserPolicy = [bool]$ci.browserPolicy }
+        if ($ci.PSObject.Properties.Name -contains 'allowedPublicIps' -and $ci.allowedPublicIps) { $allowedIps = @($ci.allowedPublicIps) }
     }
     $ciSplat = @{}
     if ($checkInUrls) { $ciSplat.Urls = $checkInUrls }
@@ -92,7 +94,7 @@ function Invoke-ModuleLocation {
     # -CheckIn: comprobacion de extremo a extremo del check-in de Zoho. Solo lectura.
     if ($CheckIn) {
         Write-Log 'Comprobacion del check-in de Zoho (ubicacion en el navegador)' -Level INFO
-        $r = Test-CheckInReadiness @ciSplat -MaxAccuracyMeters $maxAccuracy
+        $r = Test-CheckInReadiness @ciSplat -MaxAccuracyMeters $maxAccuracy -AllowedPublicIps $allowedIps
         Add-Result -Module 'Location' -Task 'Check-in Zoho' `
                    -Status $(if (-not $r.Ready) { 'FALLO' } elseif ($r.Warnings.Count -gt 0) { 'AVISO' } else { 'OK' }) `
                    -Message $(if (-not $r.Ready) { ('{0} problema(s)' -f $r.Issues.Count) }

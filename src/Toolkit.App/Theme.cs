@@ -89,6 +89,8 @@ namespace Toolkit.App
         public const string GlyphStop      = "";   // Stop
         public const string GlyphOk        = "";   // Completed
         public const string GlyphSleep     = "";   // Sleep
+        public const string GlyphSetup     = "\uE7B8";   // Package: alta de puesto
+        public const string GlyphHistory   = "\uE81C";   // History
 
         private static readonly Dictionary<string, Bitmap> _glyphCache = new Dictionary<string, Bitmap>();
 

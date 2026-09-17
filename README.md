@@ -16,7 +16,7 @@ Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a un
 
 1. Copia `Toolkit.exe` al equipo (o ejecútalo directamente desde el USB).
 2. Haz doble clic. Pedirá permisos de administrador: son necesarios porque toca servicios, registro y cuentas.
-3. Cada cosa tiene su pestaña: **Ubicación**, **Aplicaciones**, **Red**, **Soporte** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; el log de abajo es común.
+3. Cada cosa tiene su página: **Alta de puesto**, **Ubicación**, **Aplicaciones**, **Red**, **Soporte** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; la salida de abajo es común (con **Copiar**, **Limpiar**, **Historial** de ejecuciones y **Abrir carpeta de logs**).
 4. En Ubicación y Aplicaciones, pulsa primero **Auditar** / **Comprobar instaladas**. No cambia nada; solo muestra el estado. Empieza siempre por ahí.
 5. Cuando lo tengas claro, pulsa **Activar ubicación** (activa el servicio, las políticas, los usuarios y los navegadores, y al terminar comprueba el check-in) o **Instalar seleccionadas**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
 
@@ -25,6 +25,10 @@ Si algo no te convence, **Revertir** (en la pestaña Ubicación) deshace todos l
 ---
 
 ## Qué hace cada parte
+
+### Alta de puesto
+
+Para un equipo nuevo. En un solo clic y con una sola confirmación aplica, en orden: ubicación (con las opciones de la página Ubicación), micrófono y cámara para todos los usuarios, no suspender con corriente, hora por NTP, instalación de las aplicaciones del catálogo con `enabled=true` que falten, comprobación del check-in de Zoho y reporte para el ticket. Cada paso se puede desmarcar. Al terminar muestra un resumen paso a paso y abre la carpeta del reporte; **Cancelar** en la barra de estado detiene la secuencia.
 
 ### Ubicación
 
@@ -47,7 +51,9 @@ El motivo de todo esto es que los agentes hagan **check-in en Zoho People desde 
   2. Un **adaptador Wi-Fi USB** en cada equipo. No hace falta conectarlo a ninguna red: basta con que esté habilitado para que Windows triangule con las redes de alrededor.
   3. Fijar la **ubicación predeterminada** del equipo (Configuración → Privacidad → Ubicación → Ubicación predeterminada, abre Mapas). Windows la usa como respaldo cuando no tiene nada mejor. Es manual, equipo por equipo.
 
-El botón **Comprobar check-in Zoho** (o `Toolkit.exe /checkin`) recorre en orden todo lo que tiene que estar bien y dice si el equipo está listo o qué falta: capas de Windows, política de cada navegador instalado, adaptador Wi-Fi, posición real con su precisión, y conectividad (DNS + 443) hacia Zoho y hacia el servicio de posicionamiento de Microsoft. No modifica nada.
+El botón **Comprobar check-in Zoho** (o `Toolkit.exe /checkin`) recorre en orden todo lo que tiene que estar bien y dice si el equipo está listo o qué falta: capas de Windows, política de cada navegador instalado, adaptador Wi-Fi, posición real con su precisión, conectividad (DNS + 443) hacia Zoho y hacia el servicio de posicionamiento de Microsoft, y la **IP pública** con la que sale el equipo. No modifica nada.
+
+Si Zoho People usa **restricción por IP** (lo habitual con puestos por Ethernet), pon las IPs o rangos CIDR de las sedes en `catalog.json` → `location.checkIn.allowedPublicIps`: el check-in dirá `NO LISTO` cuando el equipo salga por otra IP (VPN, 4G, otra sede). Con la lista vacía solo muestra la IP para que la anotes en Zoho.
 
 **Probar en el navegador** abre una página local que pide la ubicación exactamente igual que Zoho y muestra coordenadas, precisión o el error concreto (permiso denegado, posición no disponible…). Es la prueba definitiva. **Ajustes de Windows** abre Configuración → Privacidad → Ubicación.
 
@@ -69,7 +75,9 @@ Por seguridad, no deja eliminar las cuentas integradas de Windows, la cuenta con
 
 ### Aplicaciones
 
-Instala en silencio las aplicaciones definidas en `catalog.json` (MSI o EXE): comprueba el hash del instalador, espera si otro instalador está en marcha, reintenta y verifica que la aplicación quedó instalada. Ver la sección *Configurar* para añadir las tuyas.
+Al abrir la página se ve, para cada aplicación del catálogo, si está **instalada** (y en qué versión), **desactualizada** o **no instalada**, y si su ficha aún no tiene instalador. Nada viene marcado: marca las que quieras instalar; *Comprobar instaladas* revisa todas si no marcas ninguna.
+
+Instala en silencio las aplicaciones definidas en `catalog.json` (MSI, EXE o un ZIP que los contenga): exige `sha256` en la ficha y descarga solo por HTTPS, comprueba el hash del instalador, espera si otro instalador está en marcha, reintenta y verifica que la aplicación quedó instalada. Ver la sección *Configurar* para añadir las tuyas.
 
 ### Red
 
