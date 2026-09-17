@@ -91,6 +91,9 @@ namespace Toolkit.App
         public const string GlyphSleep     = "";   // Sleep
         public const string GlyphSetup     = "\uE7B8";   // Package: alta de puesto
         public const string GlyphHistory   = "\uE81C";   // History
+        public const string GlyphFirewall  = "\uE72E";   // Lock: firewall y bloqueos
+        public const string GlyphFilter    = "\uE71C";   // Filter: filtro web
+        public const string GlyphPause     = "\uE769";   // Pause: pausar firewall
 
         private static readonly Dictionary<string, Bitmap> _glyphCache = new Dictionary<string, Bitmap>();
 

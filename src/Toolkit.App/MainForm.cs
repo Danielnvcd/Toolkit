@@ -40,7 +40,7 @@ namespace Toolkit.App
         private Panel _content;
         private readonly List<Button> _navButtons = new List<Button>();
         private readonly List<Panel> _pages = new List<Panel>();
-        private int _pageApps = -1, _pageUsers = -1;
+        private int _pageApps = -1, _pageUsers = -1, _pageFirewall = -1;
 
         // Botones que lanzan una ejecución; se bloquean todos mientras hay una en curso.
         private readonly List<Button> _actionButtons = new List<Button>();
@@ -55,6 +55,14 @@ namespace Toolkit.App
 
         // Página Red
         private NumericUpDown _pingCount;
+
+        // Página Firewall y bloqueos
+        private TextBox _fwTarget, _wfExtra;
+        private ListView _fwRules;
+        private Button _btnFwUnblock, _btnFwUnblockAll;
+        private FlowLayoutPanel _wfCats;
+        private CheckBox _wfHosts;
+        private bool _fwLoaded;
 
         // Página Usuarios
         private ListView _users;
@@ -219,6 +227,7 @@ namespace Toolkit.App
             AddPage("Ubicación",    Theme.GlyphLocation, BuildLocationPage());
             _pageApps  = AddPage("Aplicaciones", Theme.GlyphApps, BuildAppsPage());
             AddPage("Red",          Theme.GlyphNetwork,  BuildNetworkPage());
+            _pageFirewall = AddPage("Firewall", Theme.GlyphFirewall, BuildFirewallPage());
             AddPage("Soporte",      Theme.GlyphSupport,  BuildSupportPage());
             _pageUsers = AddPage("Usuarios", Theme.GlyphUsers, BuildUsersPage());
 
@@ -337,7 +346,7 @@ namespace Toolkit.App
             return index;
         }
 
-        private readonly string[] _pageGlyphs = { Theme.GlyphSetup, Theme.GlyphLocation, Theme.GlyphApps, Theme.GlyphNetwork, Theme.GlyphSupport, Theme.GlyphUsers };
+        private readonly string[] _pageGlyphs = { Theme.GlyphSetup, Theme.GlyphLocation, Theme.GlyphApps, Theme.GlyphNetwork, Theme.GlyphFirewall, Theme.GlyphSupport, Theme.GlyphUsers };
 
         private async void SelectPage(int index)
         {
@@ -358,6 +367,7 @@ namespace Toolkit.App
             // ejecución sobre el mismo runspace; se cargará al volver a la página.
             if (_busy) return;
             if (index == _pageUsers && !_usersLoaded) await RefreshUsers();
+            if (index == _pageFirewall && !_fwLoaded) await RefreshFirewallPage();
             if (index == _pageApps  && !_appsLoaded)  await RefreshApps();
         }
 
@@ -754,6 +764,294 @@ namespace Toolkit.App
 
             page.Controls.Add(stack);
             return page;
+        }
+
+        // -------------------------------------------------------------------
+        //  Página Firewall y bloqueos: tres bloques que llaman a
+        //  Toolkit.Firewall.psm1 en el runspace compartido.
+        //    1. Firewall de Windows: estado, "¿es el firewall?" y pausa de 5 min.
+        //    2. Programas sin red: reglas de bloqueo del grupo 'Toolkit BPO'.
+        //    3. Filtro web por categorías (Chrome/Edge/Firefox por política + hosts).
+        // -------------------------------------------------------------------
+        private Panel BuildFirewallPage()
+        {
+            var page = NewPage();
+            var stack = NewStack();
+            stack.Padding = new Padding(16, 6, 16, 8);
+
+            // --- 1. Firewall de Windows ---
+            stack.Controls.Add(Theme.SectionLabel("Firewall de Windows"));
+            stack.Controls.Add(Theme.Hint(
+                "¿No conecta con algo? Escribe el destino y Comprobar conexión dice si es el firewall de Windows (y qué regla), el DNS, " +
+                "el filtro web o algo de fuera. Pausar desactiva el firewall 5 minutos para descartarlo: se reactiva solo, aunque cierres el toolkit."));
+
+            var row = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = new Padding(0, 0, 0, 4) };
+            row.Controls.Add(new Label { Text = "Destino:", AutoSize = true, Font = Theme.Body, ForeColor = Theme.Text, Margin = new Padding(0, 6, 6, 0) });
+            _fwTarget = new TextBox { Width = 280, Font = Theme.Body, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 2, 10, 0) };
+            row.Controls.Add(_fwTarget);
+            row.Controls.Add(new Label
+            {
+                Text = "host, host:puerto o URL (sin puerto se prueba el 443). Ej.: login.mypurecloud.com  ·  pbx.empresa.com:5061",
+                AutoSize = true, ForeColor = Theme.TextMuted, Font = Theme.Body, Margin = new Padding(0, 6, 0, 0)
+            });
+            stack.Controls.Add(row);
+
+            var bTest   = SupportButton("Comprobar conexión",     Theme.GlyphSearch, Theme.ButtonKind.Primary);
+            var bState  = SupportButton("Estado del firewall",    Theme.GlyphInfo);
+            var bPause  = SupportButton("Pausar firewall 5 min",  Theme.GlyphPause, Theme.ButtonKind.Warn);
+            var bResume = SupportButton("Reactivar ahora",        Theme.GlyphShield);
+            bTest.Click += async (s, e) =>
+            {
+                var target = (_fwTarget.Text ?? "").Trim();
+                if (target.Length == 0) { Dialogs.Warn(this, "Comprobar conexión", "Escribe un destino: host, host:puerto o URL."); _fwTarget.Focus(); return; }
+                await RunSupport("Comprobar conexión", "param($Target) Test-FirewallConnection -ComputerName $Target | Out-Null",
+                    parameters: new Dictionary<string, object> { { "Target", target } });
+            };
+            bState.Click  += async (s, e) => await RunSupport("Estado del firewall", "Show-FirewallState -State (Get-FirewallState)");
+            bPause.Click  += async (s, e) => await RunSupport("Pausar firewall", "Suspend-Firewall -Minutes 5 | Out-Null",
+                "Se desactivará el firewall de Windows en todos los perfiles durante 5 minutos. Una tarea programada de SYSTEM lo reactiva sola " +
+                "aunque cierres el toolkit; si no se puede crear la tarea, no se pausa.\n\nSolo para comprobar si el firewall es la causa: repite la prueba y pulsa Reactivar ahora.",
+                "Pausar 5 min", danger: true);
+            bResume.Click += async (s, e) => await RunSupport("Reactivar firewall", "Resume-Firewall | Out-Null");
+            _fwTarget.KeyDown += (s, e) => { if (e.KeyCode == Keys.Enter && bTest.Enabled) { e.SuppressKeyPress = true; bTest.PerformClick(); } };
+            stack.Controls.Add(NewButtonRow(bTest, bState, bPause, bResume));
+
+            // --- 2. Programas sin red ---
+            stack.Controls.Add(Theme.SectionLabel("Programas sin red"));
+            stack.Controls.Add(Theme.Hint(
+                "Corta la red a un programa con reglas de bloqueo del firewall (entrada y salida). Solo se listan y se quitan las reglas creadas por el toolkit."));
+
+            _fwRules = new ListView
+            {
+                View = View.Details, FullRowSelect = true, MultiSelect = false, HideSelection = false,
+                BorderStyle = BorderStyle.FixedSingle, Font = Theme.Body, Height = 120,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0, 0, 0, 4)
+            };
+            _fwRules.Columns.Add("Regla", Theme.Px(230));
+            _fwRules.Columns.Add("Dirección", Theme.Px(80));
+            _fwRules.Columns.Add("Estado", Theme.Px(90));
+            _fwRules.Columns.Add("Programa", Theme.Px(300));
+            _fwRules.Resize += (s, e) => StretchLastColumn(_fwRules);
+            _fwRules.SelectedIndexChanged += (s, e) => UpdateFirewallButtons();
+            stack.Controls.Add(_fwRules);
+
+            var bBlock       = SupportButton("Bloquear programa...", Theme.GlyphBlock, Theme.ButtonKind.Primary);
+            _btnFwUnblock    = SupportButton("Quitar regla",         Theme.GlyphDelete);
+            _btnFwUnblockAll = SupportButton("Quitar todas",         Theme.GlyphDelete, Theme.ButtonKind.Danger);
+            var bRulesRef    = SupportButton("Actualizar lista",     Theme.GlyphRefresh);
+            bBlock.Click += (s, e) => BlockProgram();
+            _btnFwUnblock.Click += async (s, e) =>
+            {
+                if (_fwRules.SelectedItems.Count == 0) return;
+                var name = (string)_fwRules.SelectedItems[0].Tag;
+                await RunSupport("Quitar regla", "param($Name) Unblock-ProgramNetwork -Name $Name | Out-Null",
+                    parameters: new Dictionary<string, object> { { "Name", name } });
+                await RefreshFirewallRules();
+            };
+            _btnFwUnblockAll.Click += async (s, e) =>
+            {
+                await RunSupport("Quitar todas las reglas", "Remove-AllToolkitBlockRules | Out-Null",
+                    "Se eliminarán todas las reglas de bloqueo creadas por el toolkit en este equipo. Las demás reglas del firewall no se tocan.", "Quitar todas", danger: true);
+                await RefreshFirewallRules();
+            };
+            bRulesRef.Click += async (s, e) => await RefreshFirewallRules();
+            stack.Controls.Add(NewButtonRow(bBlock, _btnFwUnblock, _btnFwUnblockAll, bRulesRef));
+
+            // --- 3. Filtro web ---
+            stack.Controls.Add(Theme.SectionLabel("Filtro web por categorías"));
+            stack.Controls.Add(Theme.Hint(
+                "Bloquea sitios por política en Chrome y Edge (el agente ve \"Bloqueado por tu organización\") y en Firefox, y por archivo hosts " +
+                "para las apps de escritorio (WhatsApp, Telegram...). Aplicar sustituye el filtro anterior; Quitar filtro deja todo como estaba. " +
+                "Las listas se ajustan en catalog.json → webFilter."));
+            _wfCats = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Anchor = AnchorStyles.Left | AnchorStyles.Right, Margin = new Padding(0) };
+            _wfCats.Controls.Add(new Label { Text = "Cargando categorías...", AutoSize = true, ForeColor = Theme.TextMuted, Font = Theme.Body });
+            stack.Controls.Add(_wfCats);
+
+            var row2 = new FlowLayoutPanel { AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink, WrapContents = true, Margin = new Padding(0, 4, 0, 0) };
+            row2.Controls.Add(new Label { Text = "Otros dominios:", AutoSize = true, Font = Theme.Body, ForeColor = Theme.Text, Margin = new Padding(0, 6, 6, 0) });
+            _wfExtra = new TextBox { Width = 420, Font = Theme.Body, BorderStyle = BorderStyle.FixedSingle, Margin = new Padding(0, 2, 10, 0) };
+            row2.Controls.Add(_wfExtra);
+            row2.Controls.Add(new Label { Text = "separados por coma, sin https://", AutoSize = true, ForeColor = Theme.TextMuted, Font = Theme.Body, Margin = new Padding(0, 6, 0, 0) });
+            stack.Controls.Add(row2);
+            _wfHosts = Theme.Check("También en el archivo hosts (apps de escritorio; no solo navegadores)", true);
+            stack.Controls.Add(_wfHosts);
+
+            var bApply  = SupportButton("Aplicar filtro",     Theme.GlyphFilter, Theme.ButtonKind.Success);
+            var bClear  = SupportButton("Quitar filtro",      Theme.GlyphUndo,   Theme.ButtonKind.Danger);
+            var bWfInfo = SupportButton("Estado del filtro",  Theme.GlyphInfo);
+            bApply.Click  += (s, e) => ApplyWebFilter();
+            bClear.Click  += async (s, e) =>
+            {
+                await RunSupport("Quitar filtro web", "Clear-WebFilter | Out-Null",
+                    "Se quitarán los bloqueos del toolkit de Chrome, Edge, Firefox y el archivo hosts. Las entradas que no puso el toolkit (GPO) se conservan.", "Quitar filtro");
+                await RefreshFirewallPage();
+            };
+            bWfInfo.Click += async (s, e) => await RunSupport("Estado del filtro", "param($Json) Show-WebFilterState -CatalogJson $Json | Out-Null",
+                parameters: new Dictionary<string, object> { { "Json", CurrentCatalog() } });
+            stack.Controls.Add(NewButtonRow(bApply, bClear, bWfInfo));
+
+            page.Controls.Add(stack);
+            UpdateFirewallButtons();
+            return page;
+        }
+
+        private string CurrentCatalog()
+        {
+            string origin;
+            return EmbeddedScripts.ReadCatalog(_args.ConfigPath, _args.SharePath, out origin);
+        }
+
+        private void UpdateFirewallButtons()
+        {
+            if (_btnFwUnblock == null) return;   // SetBusy antes de construir la página
+            _btnFwUnblock.Enabled    = _fwRules.SelectedItems.Count > 0;
+            _btnFwUnblockAll.Enabled = _fwRules.Items.Count > 0;
+        }
+
+        // Una sola consulta al runspace para las dos listas de la página: categorías
+        // (con cuáles están activas ahora) y reglas del toolkit.
+        private const string FirewallQuery =
+            "param($Json) $st = Get-WebFilterState; $covered = @(); " +
+            "foreach ($c in Get-WebFilterCategories -CatalogJson $Json) { " +
+            "  $on = ($st.Categories -contains $c.id); if ($on) { $covered += $c.domains } " +
+            "  [pscustomobject]@{ Kind = 'cat'; Id = [string]$c.id; Name = [string]$c.name; Count = @($c.domains).Count; Active = $on } } " +
+            "[pscustomobject]@{ Kind = 'state'; Active = [bool]$st.Active; Extra = (@($st.Domains | Where-Object { $covered -notcontains $_ }) -join ', '); Hosts = ($st.HostsCount -gt 0) }; " +
+            "foreach ($r in Get-ToolkitBlockRules) { [pscustomobject]@{ Kind = 'rule'; Name = [string]$r.Name; DisplayName = [string]$r.DisplayName; " +
+            "  Direction = [string]$r.Direction; Enabled = [bool]$r.Enabled; Program = [string]$r.Program; Exists = [bool]$r.Exists } }";
+
+        private async Task RefreshFirewallPage()
+        {
+            SetBusy(true, "Leyendo firewall y filtro web...");
+            // Rellenar las listas mueve el foco y el panel se desplazaría solo: se conserva la posición.
+            var pg = _pages[_pageFirewall];
+            var scroll = pg.AutoScrollPosition;
+            var cats = new List<PSObject>(); var rules = new List<PSObject>(); PSObject state = null;
+            string error = null;
+            await Task.Run(() =>
+            {
+                try
+                {
+                    foreach (var o in SharedHost().Invoke(FirewallQuery, new Dictionary<string, object> { { "Json", CurrentCatalog() } }))
+                    {
+                        if (o == null) continue;
+                        switch (Prop(o, "Kind")) { case "cat": cats.Add(o); break; case "rule": rules.Add(o); break; case "state": state = o; break; }
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+            });
+
+            _wfCats.SuspendLayout();
+            _wfCats.Controls.Clear();
+            foreach (var c in cats)
+            {
+                var chk = Theme.Check(Prop(c, "Name") + " (" + Prop(c, "Count") + ")", PropBool(c, "Active"));
+                chk.Tag = Prop(c, "Id");
+                chk.Margin = new Padding(0, 2, 18, 2);
+                _wfCats.Controls.Add(chk);
+            }
+            _wfCats.ResumeLayout();
+            if (state != null)
+            {
+                _wfExtra.Text = Prop(state, "Extra");
+                if (PropBool(state, "Active")) _wfHosts.Checked = PropBool(state, "Hosts");
+            }
+            FillFirewallRules(rules);
+            _fwLoaded = error == null;
+            pg.AutoScrollPosition = new Point(-scroll.X, -scroll.Y);
+
+            var active = state != null && PropBool(state, "Active");
+            SetBusy(false, error != null ? "Error leyendo el firewall: " + error
+                                         : (active ? "Filtro web ACTIVO. " : "Sin filtro web. ") + rules.Count + " regla(s) del toolkit.",
+                    error != null ? StatusKind.Error : StatusKind.Info);
+            if (error != null) Dialogs.Warn(this, "Firewall", error);
+        }
+
+        private async Task RefreshFirewallRules()
+        {
+            var rules = new List<PSObject>();
+            await Task.Run(() =>
+            {
+                try { foreach (var o in SharedHost().Invoke("Get-ToolkitBlockRules")) if (o != null) rules.Add(o); } catch { }
+            });
+            FillFirewallRules(rules);
+        }
+
+        private void FillFirewallRules(List<PSObject> rules)
+        {
+            _fwRules.BeginUpdate();
+            _fwRules.Items.Clear();
+            foreach (var r in rules)
+            {
+                var dir = Prop(r, "Direction") == "Outbound" ? "salida" : "entrada";
+                var exists = r.Properties["Exists"] == null || PropBool(r, "Exists");
+                var item = new ListViewItem(new[]
+                {
+                    Prop(r, "DisplayName"),
+                    dir,
+                    PropBool(r, "Enabled") ? "activa" : "desactivada",
+                    Prop(r, "Program") + (exists ? "" : "  (no existe)")
+                }) { Tag = Prop(r, "Name"), UseItemStyleForSubItems = false };
+                if (!PropBool(r, "Enabled")) item.ForeColor = Theme.TextMuted;
+                if (!exists) item.SubItems[3].ForeColor = Theme.Warn;
+                _fwRules.Items.Add(item);
+            }
+            _fwRules.EndUpdate();
+            StretchLastColumn(_fwRules);
+            UpdateFirewallButtons();
+        }
+
+        private async void BlockProgram()
+        {
+            string path;
+            using (var dlg = new OpenFileDialog
+            {
+                Title = "Programa al que cortar la red",
+                Filter = "Programas (*.exe)|*.exe|Todos los archivos (*.*)|*.*",
+                InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                CheckFileExists = true
+            })
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                path = dlg.FileName;
+            }
+            await RunSupport("Bloquear programa", "param($Path) Block-ProgramNetwork -Path $Path | Out-Null",
+                "Se crearán dos reglas de bloqueo (entrada y salida) para:\n    " + path +
+                "\n\nEl programa dejará de tener red al momento. Se quita desde esta misma lista.", "Bloquear",
+                parameters: new Dictionary<string, object> { { "Path", path } });
+            await RefreshFirewallRules();
+        }
+
+        private async void ApplyWebFilter()
+        {
+            var ids = new List<string>(); var names = new List<string>();
+            foreach (Control c in _wfCats.Controls)
+            {
+                var chk = c as CheckBox;
+                if (chk == null || !chk.Checked) continue;
+                ids.Add((string)chk.Tag);
+                var cut = chk.Text.LastIndexOf(" (");
+                names.Add(cut > 0 ? chk.Text.Substring(0, cut) : chk.Text);
+            }
+            var extra = (_wfExtra.Text ?? "").Split(new[] { ',', ';', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                                              .Select(d => d.Trim()).Where(d => d.Length > 0).ToList();
+            if (ids.Count == 0 && extra.Count == 0)
+            {
+                Dialogs.Warn(this, "Filtro web", "Marca al menos una categoría o escribe algún dominio.");
+                return;
+            }
+            var what = (names.Count > 0 ? "Categorías: " + string.Join(", ", names) : "Sin categorías") +
+                       (extra.Count > 0 ? "\nDominios: " + string.Join(", ", extra) : "");
+            if (!Dialogs.Confirm(this, "Aplicar filtro web",
+                what + "\n\nSe bloquearán en Chrome, Edge y Firefox" + (_wfHosts.Checked ? " y en el archivo hosts" : "") +
+                ". Sustituye el filtro anterior del toolkit. Reversible con 'Quitar filtro'.", "Aplicar filtro")) return;
+
+            await RunSupport("Aplicar filtro web",
+                "param($Ids, $Domains, $Json, $NoHosts) Set-WebFilter -CategoryIds $Ids -Domains $Domains -CatalogJson $Json -NoHosts:$NoHosts | Out-Null",
+                parameters: new Dictionary<string, object>
+                {
+                    { "Ids", ids.ToArray() }, { "Domains", extra.ToArray() }, { "Json", CurrentCatalog() }, { "NoHosts", !_wfHosts.Checked }
+                });
+            await RefreshFirewallPage();
         }
 
         // -------------------------------------------------------------------
@@ -1582,7 +1880,10 @@ namespace Toolkit.App
             if (busy)
                 _btnUserPwd.Enabled = _btnUserNoPwd.Enabled = _btnUserToggle.Enabled = _btnUserDelete.Enabled = false;
             else
+            {
                 UpdateUserButtons();
+                UpdateFirewallButtons();
+            }
 
             _progress.Visible = busy;
             _btnCancel.Visible = busy;

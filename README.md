@@ -6,6 +6,7 @@ Utilidad portable para Windows 10/11 que resuelve, desde una sola ventana, las t
 - **Gestionar las cuentas locales**: ver quién hay, cambiar o quitar contraseñas, habilitar, deshabilitar, crear y eliminar usuarios.
 - **Instalar aplicaciones** en silencio a partir de un catálogo.
 - **Diagnosticar la red**: latencia, jitter, pérdida de paquetes, DNS, MTU, puertos y TLS.
+- **Firewall y bloqueos**: saber si una conexión falla por el firewall (y por qué regla), pausarlo 5 minutos con reactivación automática, cortar la red a un programa y bloquear redes sociales, vídeo, mensajería, juegos o apuestas en los navegadores y en apps de escritorio.
 - **Soporte de primer nivel**: info del equipo, audio y micrófono, impresoras, hora, temporales, reparar red, reporte para ticket.
 
 Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a una carpeta compartida y se ejecuta. Todo lo que necesita ya viene con Windows.
@@ -16,7 +17,7 @@ Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a un
 
 1. Copia `Toolkit.exe` al equipo (o ejecútalo directamente desde el USB).
 2. Haz doble clic. Pedirá permisos de administrador: son necesarios porque toca servicios, registro y cuentas.
-3. Cada cosa tiene su página: **Alta de puesto**, **Ubicación**, **Aplicaciones**, **Red**, **Soporte** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; la salida de abajo es común (con **Copiar**, **Limpiar**, **Historial** de ejecuciones y **Abrir carpeta de logs**).
+3. Cada cosa tiene su página: **Alta de puesto**, **Ubicación**, **Aplicaciones**, **Red**, **Firewall**, **Soporte** y **Usuarios**. Cada una lleva sus propias opciones y sus propios botones; la salida de abajo es común (con **Copiar**, **Limpiar**, **Historial** de ejecuciones y **Abrir carpeta de logs**).
 4. En Ubicación y Aplicaciones, pulsa primero **Auditar** / **Comprobar instaladas**. No cambia nada; solo muestra el estado. Empieza siempre por ahí.
 5. Cuando lo tengas claro, pulsa **Activar ubicación** (activa el servicio, las políticas, los usuarios y los navegadores, y al terminar comprueba el check-in) o **Instalar seleccionadas**. Todo lo que hace queda en el log de la ventana y en `C:\ProgramData\Toolkit\logs\`.
 
@@ -82,6 +83,30 @@ Instala en silencio las aplicaciones definidas en `catalog.json` (MSI, EXE o un 
 ### Red
 
 Mide contra los destinos que indiques en `catalog.json`: ping (latencia, jitter y pérdida), resolución DNS, puertos TCP, certificados TLS, MTU y proxy. Sirve para saber si un "va lento" o "se corta" es culpa de la red o del equipo.
+
+### Firewall y bloqueos
+
+Tres cosas que un técnico hace a mano en `wf.msc`, el archivo `hosts` y `chrome://policy`, en una sola página:
+
+**¿Es el firewall?** Escribe un destino (`host`, `host:puerto` o una URL) y **Comprobar conexión** recorre, en orden: si el archivo `hosts` lo desvía, si el DNS resuelve, si el puerto TCP abre, qué **reglas de bloqueo** activas del firewall de Windows casan con ese destino (por puerto, dirección o programa), si el perfil bloquea la salida por defecto y si el filtro web lo tiene bloqueado. Termina con un veredicto claro: `OK`, `BLOQUEADO` (y por qué regla), `SIN DNS` o `NO CONECTA` (no hay bloqueo en Windows: el corte está fuera, en la red, el proxy o el servidor). No cambia nada.
+
+**Estado del firewall** muestra los tres perfiles, el servicio, si hay un firewall de terceros registrado (si lo hay, pausar el de Windows no sirve de nada) y las reglas del toolkit.
+
+**Pausar firewall 5 min** lo desactiva en todos los perfiles para descartarlo de una vez. La reactivación no depende del toolkit: se programa una tarea de `SYSTEM` que vuelve a activarlo a los 5 minutos y se borra sola, aunque el técnico cierre la ventana o el equipo se reinicie antes. Si la tarea no se puede crear, no se pausa. **Reactivar ahora** lo devuelve al estado exacto que tenía, sin esperar.
+
+**Programas sin red.** Elige un `.exe` y el toolkit le crea dos reglas de bloqueo (entrada y salida) en el grupo `Toolkit BPO`. La lista solo enseña y solo quita las reglas de ese grupo; las demás reglas del firewall no se tocan. Sirve para cortar un programa que no debe salir a Internet o para reproducir un fallo.
+
+**Filtro web por categorías.** Marca las categorías (redes sociales, vídeo y streaming, mensajería personal, juegos, apuestas, contenido adulto), añade dominios sueltos si hace falta y pulsa **Aplicar filtro**. Se bloquea en tres capas:
+
+| Capa | Cómo | Para qué |
+|---|---|---|
+| Chrome y Edge | política `URLBlocklist` | El agente ve la página "Bloqueado por tu organización". Se aplica al momento y sobrevive a que cambien las IPs y a DNS sobre HTTPS |
+| Firefox | política `WebsiteFilter` | Igual; se aplica al reiniciar Firefox |
+| Archivo `hosts` | `0.0.0.0 dominio` y `www.dominio` | Apps de escritorio (WhatsApp, Telegram, Discord...) que no pasan por el navegador. Se puede desmarcar |
+
+Un dominio bloquea también sus subdominios en los navegadores. **Aplicar** sustituye el filtro anterior del toolkit (no acumula); **Quitar filtro** deja las tres capas como estaban. Las listas de las políticas son compartidas con las GPO de la empresa: el toolkit recuerda qué dominios puso él y solo toca esos, y en `hosts` escribe entre dos marcadores y solo ese bloque. Los dominios de Microsoft nunca se escriben en `hosts` (Defender lo detectaría como `HostsFileHijack` y lo desharía); en los navegadores sí se bloquean. Las categorías y sus dominios se ajustan en `catalog.json` → `webFilter` sin recompilar.
+
+Estos bloqueos no pasan por *Revertir* (no son valores sueltos de registro): se quitan desde la propia página.
 
 ### Soporte
 
@@ -160,6 +185,10 @@ Toda la configuración está en un solo archivo, `catalog.json`. El exe lleva un
     "pingTargets": [ { "label": "Internet", "host": "8.8.8.8" } ],
     "dnsNames":    [ "www.google.com" ],
     "tcpTargets":  [ { "label": "Web", "host": "ejemplo.com", "port": 443 } ]
+  },
+  "webFilter": {
+    // categorías del filtro web; vacío = las seis que trae el toolkit. Mismo id = sustituye su lista; id nuevo = se añade
+    "categories": [ { "id": "social", "name": "Redes sociales", "domains": [ "facebook.com", "instagram.com" ] } ]
   },
   "apps": [ /* ver más abajo */ ]
 }

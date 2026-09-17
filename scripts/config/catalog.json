@@ -51,6 +51,11 @@
     "pingCount": 50
   },
 
+  "webFilter": {
+    "_comment": "Filtro web de la pagina Firewall. El toolkit trae seis categorias (social, video, messaging, games, betting, adult) con sus listas. Para cambiar una lista o anadir una categoria, ponla aqui con la misma estructura: mismo id = sustituye a la del toolkit; id nuevo = se anade. Un dominio bloquea tambien sus subdominios en Chrome/Edge/Firefox; en el archivo hosts se escriben dominio y www.dominio, asi que para apps de escritorio incluye los hosts secundarios (CDN, API) que usen. Ejemplo: { \"id\": \"social\", \"name\": \"Redes sociales\", \"domains\": [ \"facebook.com\", \"instagram.com\" ] }",
+    "categories": []
+  },
+
   "apps": [
     {
       "id": "genesys-cloud",

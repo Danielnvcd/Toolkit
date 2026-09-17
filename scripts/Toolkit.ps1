@@ -42,7 +42,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Definition
 # ---------------------------------------------------------------------------
 #  Carga de modulos
 # ---------------------------------------------------------------------------
-foreach ($m in @('Toolkit.Core', 'Toolkit.Location', 'Toolkit.Apps', 'Toolkit.Network', 'Toolkit.Users', 'Toolkit.Support')) {
+foreach ($m in @('Toolkit.Core', 'Toolkit.Location', 'Toolkit.Apps', 'Toolkit.Network', 'Toolkit.Users', 'Toolkit.Support', 'Toolkit.Firewall')) {
     $path = Join-Path $here "modules\$m.psm1"
     if (-not (Test-Path -LiteralPath $path)) {
         Write-Host "ERROR: falta el modulo $path" -ForegroundColor Red
@@ -140,6 +140,7 @@ function Show-Menu {
         Write-Host '   --- USUARIOS LOCALES ---' -ForegroundColor Gray
         Write-Host '    U) Gestionar usuarios (listar, contrasena, eliminar, crear...)'
         Write-Host '    S) Soporte: info del equipo, audio, red, impresoras, hora, temporales...'
+        Write-Host '    F) Firewall y bloqueos: es el firewall?, programas sin red, filtro web'
         Write-Host ''
         Write-Host '   --- MANTENIMIENTO ---' -ForegroundColor Gray
         Write-Host '    8) Revertir cambios de registro (rollback)'
@@ -168,6 +169,7 @@ function Show-Menu {
             '9' { Start-Process (Join-Path $Root 'logs') }
             'U' { Show-UsersMenu }
             'S' { Show-SupportMenu }
+            'F' { Show-FirewallMenu }
             '0' { return }
         }
     }
@@ -292,6 +294,56 @@ function Show-SupportMenu {
             'I' { Start-UpdateScan | Out-Null; Wait-Key }
             'J' { Repair-SystemFiles | Out-Null; Wait-Key }
             'R' { $p = Export-SupportReport -Root $Root; Start-Process explorer.exe "/select,`"$p`""; Wait-Key }
+            '0' { return }
+        }
+    }
+}
+
+function Show-FirewallMenu {
+    Initialize-Toolkit -Root $Root
+    $config = Get-ToolkitConfig -Path $ConfigPath
+    $json = $config | ConvertTo-Json -Depth 10
+    while ($true) {
+        Clear-Host
+        Write-Host ''
+        Write-Host '   --- FIREWALL DE WINDOWS ---' -ForegroundColor Gray
+        Write-Host '    1) Estado del firewall'
+        Write-Host '    2) Comprobar conexion a host:puerto (es el firewall?)'
+        Write-Host '    3) Pausar firewall 5 min (se reactiva solo)'
+        Write-Host '    4) Reactivar firewall ahora'
+        Write-Host ''
+        Write-Host '   --- PROGRAMAS SIN RED ---' -ForegroundColor Gray
+        Write-Host '    5) Listar reglas del toolkit'
+        Write-Host '    6) Bloquear programa (ruta al .exe)'
+        Write-Host '    7) Desbloquear programa (ruta al .exe)'
+        Write-Host ''
+        Write-Host '   --- FILTRO WEB ---' -ForegroundColor Gray
+        Write-Host '    8) Estado del filtro y categorias'
+        Write-Host '    9) Aplicar filtro (categorias por id, separadas por coma)'
+        Write-Host '    Q) Quitar filtro web'
+        Write-Host '    0) Volver'
+        Write-Host ''
+        switch ((Read-Host '   Opcion').Trim().ToUpper()) {
+            '1' { Show-FirewallState -State (Get-FirewallState); Wait-Key }
+            '2' { $t = Read-Host '   Destino (host, host:puerto o URL)'; if ($t) { Test-FirewallConnection -ComputerName $t | Out-Null }; Wait-Key }
+            '3' { Suspend-Firewall -Minutes 5 | Out-Null; Wait-Key }
+            '4' { Resume-Firewall | Out-Null; Wait-Key }
+            '5' { Show-ToolkitBlockRules | Out-Null; Wait-Key }
+            '6' { $p = Read-Host '   Ruta del .exe'; if ($p) { Block-ProgramNetwork -Path $p | Out-Null }; Wait-Key }
+            '7' { $p = Read-Host '   Ruta del .exe'; if ($p) { Unblock-ProgramNetwork -Path $p | Out-Null }; Wait-Key }
+            '8' {
+                Show-WebFilterState -CatalogJson $json | Out-Null
+                Write-Host ''
+                foreach ($c in Get-WebFilterCategories -CatalogJson $json) { Write-Host ('   {0,-10} {1,-22} {2} dominios' -f $c.id, $c.name, $c.domains.Count) }
+                Wait-Key
+            }
+            '9' {
+                $ids = (Read-Host '   Ids de categorias (ej. social,video,messaging)') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                $dom = (Read-Host '   Dominios sueltos (opcional, separados por coma)') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+                Set-WebFilter -CategoryIds $ids -Domains $dom -CatalogJson $json | Out-Null
+                Wait-Key
+            }
+            'Q' { Clear-WebFilter | Out-Null; Wait-Key }
             '0' { return }
         }
     }

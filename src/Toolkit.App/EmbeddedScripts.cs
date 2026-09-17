@@ -24,7 +24,8 @@ namespace Toolkit.App
             "Toolkit.Apps",
             "Toolkit.Network",
             "Toolkit.Users",
-            "Toolkit.Support"
+            "Toolkit.Support",
+            "Toolkit.Firewall"
         };
 
         private const string Prefix = "Scripts/";

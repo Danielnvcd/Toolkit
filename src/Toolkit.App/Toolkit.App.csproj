@@ -68,6 +68,7 @@
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Network.psm1"  LogicalName="Scripts/Toolkit.Network.psm1" />
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Users.psm1"    LogicalName="Scripts/Toolkit.Users.psm1" />
     <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Support.psm1"  LogicalName="Scripts/Toolkit.Support.psm1" />
+    <EmbeddedResource Include="..\..\scripts\modules\Toolkit.Firewall.psm1" LogicalName="Scripts/Toolkit.Firewall.psm1" />
     <EmbeddedResource Include="..\..\scripts\Invoke-ToolkitRun.ps1"         LogicalName="Scripts/Invoke-ToolkitRun.ps1" />
     <EmbeddedResource Include="..\..\scripts\config\catalog.json"           LogicalName="Scripts/catalog.json" />
     <!-- El mismo icono, embebido para las ventanas (titulo, Alt+Tab, cabecera). -->
