@@ -24,6 +24,14 @@
 param(
     [ValidateSet('location', 'apps', 'network', 'users')][string[]]$Modules = @('location', 'apps', 'network', 'users'),
     [string[]]$Apps,
+    # Reinstala aunque ya este puesta: la unica forma de subir de version una
+    # aplicacion que se autoactualiza y por tanto no lleva minVersion en la ficha.
+    [switch]$ForceReinstall,
+    # Desinstala en vez de instalar los ids de -Apps.
+    [switch]$UninstallApps,
+    # Permite abrir el desinstalador del fabricante si no tiene modo silencioso
+    # (solo desde la interfaz, con el tecnico delante).
+    [switch]$AllowInteractive,
     [switch]$ReportOnly,
     [switch]$Silent,
     [string]$ConfigJson,
@@ -176,13 +184,24 @@ function Invoke-ModuleApps {
         return
     }
 
+    # Desinstalar es SIEMPRE una seleccion explicita: nunca se barre el catalogo entero.
+    if ($UninstallApps) {
+        if (-not $Apps) {
+            Write-Log 'Desinstalacion: hay que indicar que aplicaciones (-Apps / pestana Aplicaciones).' -Level ERROR
+            Add-Result -Module 'Apps' -Task 'Desinstalacion' -Status 'FALLO' -Message 'Sin aplicaciones seleccionadas'
+            return
+        }
+        Uninstall-AppSet -Catalog $config -Only $Apps -AllowInteractive:$AllowInteractive
+        return
+    }
+
     if (-not $Apps -and @($config.apps | Where-Object { $_.enabled }).Count -eq 0) {
         Write-Log 'Ninguna aplicacion activada en el catalogo (todas con enabled=false).' -Level WARN
         Write-Log 'Pon enabled=true en las validadas, o seleccionalas a mano desde la pestana Aplicaciones (/apps:id).' -Level WARN
         return
     }
 
-    Install-AppSet -Catalog $config -Only $Apps
+    Install-AppSet -Catalog $config -Only $Apps -Force:$ForceReinstall
 }
 
 # ---------------------------------------------------------------------------

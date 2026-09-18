@@ -623,47 +623,721 @@ function Repair-SystemFiles {
 
 #endregion
 
-#region ---------- Reporte ----------
+#region ---------- Antivirus ----------
+
+function Get-AntivirusStatus {
+    <#
+        Que antivirus hay registrado en el Centro de seguridad y como esta la
+        proteccion en tiempo real de Microsoft Defender. Solo lectura.
+
+        Windows solo deja UN antivirus activo: si hay uno de terceros, Defender
+        pasa a modo pasivo y tocarlo no sirve de nada. Por eso se informa de los
+        dos antes de ofrecer desactivar nada.
+    #>
+    [CmdletBinding()]
+    param([switch]$Quiet)
+
+    $r = [ordered]@{
+        Productos         = @()
+        ProductoActivo    = $null
+        Terceros          = @()
+        DefenderPresente  = $false
+        DefenderModo      = $null
+        TiempoRealActivo  = $null
+        TamperProtection  = $null
+        FirmasVersion     = $null
+        FirmasFecha       = $null
+        PorDirectiva      = $false
+    }
+
+    # Centro de seguridad de Windows: lo ve todo, sea Defender o de terceros.
+    try {
+        foreach ($p in @(Get-CimInstance -Namespace 'root\SecurityCenter2' -ClassName AntiVirusProduct -ErrorAction Stop)) {
+            # productState es un mapa de bits de 3 bytes: el segundo dice si el
+            # analizador esta activo y el tercero si las firmas estan al dia.
+            $hex     = '{0:x6}' -f [int]$p.productState
+            $scanner = [Convert]::ToInt32($hex.Substring(2, 2), 16)
+            $firmas  = [Convert]::ToInt32($hex.Substring(4, 2), 16)
+            $activo  = ($scanner -band 0x10) -ne 0
+            $r.Productos += [pscustomobject]@{
+                Nombre      = $p.displayName
+                Activo      = $activo
+                FirmasAlDia = ($firmas -eq 0)
+                Ruta        = $p.pathToSignedProductExe
+            }
+            if ($activo -and -not $r.ProductoActivo) { $r.ProductoActivo = $p.displayName }
+            if ($p.displayName -notmatch 'Windows Defender|Microsoft Defender') { $r.Terceros += $p.displayName }
+        }
+    } catch { }
+
+    if (Get-Command Get-MpComputerStatus -ErrorAction SilentlyContinue) {
+        try {
+            $mp = Get-MpComputerStatus -ErrorAction Stop
+            $r.DefenderPresente = $true
+            $r.TiempoRealActivo = [bool]$mp.RealTimeProtectionEnabled
+            $r.FirmasVersion    = $mp.AntivirusSignatureVersion
+            if ($mp.AntivirusSignatureLastUpdated) { $r.FirmasFecha = $mp.AntivirusSignatureLastUpdated.ToString('yyyy-MM-dd HH:mm') }
+            if ($mp.PSObject.Properties.Name -contains 'IsTamperProtected') { $r.TamperProtection = [bool]$mp.IsTamperProtected }
+            if ($mp.PSObject.Properties.Name -contains 'AMRunningMode')     { $r.DefenderModo     = $mp.AMRunningMode }
+        } catch { }
+    }
+
+    # Una directiva de grupo / Intune que apague Defender no se revierte desde aqui.
+    $pol = Get-RegValue -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender' -Name 'DisableAntiSpyware'
+    if ($pol -eq 1) { $r.PorDirectiva = $true }
+
+    if (-not $Quiet) {
+        Write-Log 'ANTIVIRUS' -Level STEP
+        if ($r.Productos.Count -eq 0) { Write-Log '  ! El Centro de seguridad no registra ningun antivirus.' -Level WARN }
+        foreach ($p in $r.Productos) {
+            Write-Log ("  {0} {1,-42} {2}" -f $(if ($p.Activo) { '+' } else { '-' }), $p.Nombre,
+                       ("{0}, firmas {1}" -f $(if ($p.Activo) { 'activo' } else { 'inactivo' }),
+                                            $(if ($p.FirmasAlDia) { 'al dia' } else { 'DESACTUALIZADAS' }))) `
+                      -Level $(if ($p.Activo -and $p.FirmasAlDia) { 'OK' } elseif ($p.Activo) { 'WARN' } else { 'INFO' })
+        }
+        if ($r.DefenderPresente) {
+            Write-Log ("  Defender: modo {0}, tiempo real {1}" -f
+                       $(if ($r.DefenderModo) { $r.DefenderModo } else { 'n/d' }),
+                       $(if ($r.TiempoRealActivo) { 'ACTIVO' } else { 'desactivado' })) `
+                      -Level $(if ($r.TiempoRealActivo) { 'OK' } else { 'WARN' })
+            if ($r.FirmasVersion) { Write-Log ("  Firmas  : {0} ({1})" -f $r.FirmasVersion, $r.FirmasFecha) -Level INFO }
+            if ($r.TamperProtection) { Write-Log '  ! Proteccion contra manipulaciones ACTIVA: Defender no se puede desactivar por script.' -Level WARN }
+        }
+        if ($r.Terceros.Count -gt 0) {
+            Write-Log ("  i Antivirus de terceros: {0}. El toolkit NO puede pararlo; hazlo desde su propia consola." -f ($r.Terceros -join ', ')) -Level INFO
+        }
+        if ($r.PorDirectiva) { Write-Log '  ! Defender esta deshabilitado por directiva (DisableAntiSpyware=1).' -Level WARN }
+    }
+
+    return [pscustomobject]$r
+}
+
+function Set-DefenderRealtime {
+    <#
+        Desactiva o vuelve a activar la proteccion en tiempo real de Microsoft
+        Defender, para cuando el analizador bloquea un instalador corporativo
+        legitimo y hay que ponerlo con el tecnico delante.
+
+        Al desactivar se programa SIEMPRE una tarea que la vuelve a encender sola
+        (a los -ReenableAfterMinutes minutos y tambien en el siguiente arranque):
+        un equipo de la flota no puede quedarse sin proteccion porque alguien se
+        olvidase de volver a pulsar el boton.
+
+        No funciona -- ni debe -- con la proteccion contra manipulaciones (Tamper
+        Protection) activa ni con Defender gobernado por directiva: eso se cambia
+        en Seguridad de Windows o en Intune, no desde aqui.
+    #>
+    [CmdletBinding(DefaultParameterSetName = 'On')]
+    param(
+        [Parameter(Mandatory, ParameterSetName = 'Off')][switch]$Disable,
+        [Parameter(Mandatory, ParameterSetName = 'On')][switch]$Enable,
+        [Parameter(ParameterSetName = 'Off')][ValidateRange(5, 480)][int]$ReenableAfterMinutes = 30
+    )
+
+    $taskName = 'Toolkit-ReactivarAntivirus'
+    $off = ($PSCmdlet.ParameterSetName -eq 'Off')
+    Write-Log $(if ($off) { 'DESACTIVAR ANTIVIRUS (TEMPORAL)' } else { 'ACTIVAR ANTIVIRUS' }) -Level STEP
+
+    if (-not (Get-Command Set-MpPreference -ErrorAction SilentlyContinue)) {
+        Write-Log '  x Este equipo no tiene los cmdlets de Microsoft Defender (modulo Defender).' -Level ERROR
+        return $false
+    }
+
+    $st = Get-AntivirusStatus -Quiet
+
+    if ($st.Terceros.Count -gt 0) {
+        Write-Log ("  ! El antivirus de este equipo es de terceros ({0})." -f ($st.Terceros -join ', ')) -Level WARN
+        Write-Log '    Defender esta en modo pasivo: activarlo o desactivarlo aqui no cambia nada.' -Level WARN
+        Write-Log '    Pausalo desde su propia consola o desde el icono del area de notificacion.' -Level WARN
+        return $false
+    }
+    if ($st.PorDirectiva) {
+        Write-Log '  x Defender esta gobernado por directiva (DisableAntiSpyware). Cambialo en la GPO / Intune.' -Level ERROR
+        return $false
+    }
+
+    if ($off) {
+        if ($st.TamperProtection) {
+            Write-Log '  x La proteccion contra manipulaciones esta ACTIVA: Windows ignora cualquier intento por script.' -Level ERROR
+            Write-Log '    Desactivala primero en Seguridad de Windows > Proteccion antivirus y contra amenazas >' -Level ERROR
+            Write-Log '    Administrar la configuracion > Proteccion contra manipulaciones. En equipos gestionados, desde Intune.' -Level ERROR
+            return $false
+        }
+        if (Test-ReportOnly) { Write-Log '  ! MODO REPORTE: no se toca el antivirus.' -Level WARN; return $false }
+
+        try {
+            Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction Stop
+        } catch {
+            Write-Log "  x No se pudo desactivar: $($_.Exception.Message)" -Level ERROR
+            return $false
+        }
+
+        Start-Sleep -Seconds 2
+        if ((Get-AntivirusStatus -Quiet).TiempoRealActivo) {
+            Write-Log '  x Windows la ha vuelto a encender al instante (proteccion contra manipulaciones o directiva).' -Level ERROR
+            return $false
+        }
+
+        $ok = Register-DefenderReenableTask -TaskName $taskName -Minutes $ReenableAfterMinutes
+        Write-Log ("  + Proteccion en tiempo real DESACTIVADA. Se reactivara sola en {0} min{1}." -f
+                   $ReenableAfterMinutes, $(if ($ok) { ' y al reiniciar' } else { '' })) -Level WARN
+        if (-not $ok) { Write-Log '  ! No se pudo programar la reactivacion automatica: ACUERDATE de volver a activarla a mano.' -Level ERROR }
+        Write-Log '  ! Mientras este desactivada el equipo no esta protegido. Instala solo lo que venga del catalogo.' -Level WARN
+        Add-Result -Module 'Support' -Task 'Antivirus' -Status 'CAMBIADO' -Message "Tiempo real desactivado ($ReenableAfterMinutes min)"
+        return $true
+    }
+
+    # --- Activar ---
+    try {
+        Set-MpPreference -DisableRealtimeMonitoring $false -ErrorAction Stop
+    } catch {
+        Write-Log "  x No se pudo activar: $($_.Exception.Message)" -Level ERROR
+        return $false
+    }
+
+    Start-Sleep -Seconds 2
+    Unregister-DefenderReenableTask -TaskName $taskName
+
+    if ((Get-AntivirusStatus -Quiet).TiempoRealActivo) {
+        Write-Log '  + Proteccion en tiempo real ACTIVA.' -Level OK
+        Add-Result -Module 'Support' -Task 'Antivirus' -Status 'CAMBIADO' -Message 'Tiempo real reactivado'
+        return $true
+    }
+    Write-Log '  x Sigue apareciendo como desactivada. Revisa Seguridad de Windows.' -Level ERROR
+    return $false
+}
+
+function Register-DefenderReenableTask {
+    <# Tarea programada que vuelve a encender el tiempo real y se borra sola. #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$TaskName, [Parameter(Mandatory)][int]$Minutes)
+
+    if (-not (Get-Command Register-ScheduledTask -ErrorAction SilentlyContinue)) { return $false }
+    try {
+        $cmd = "Set-MpPreference -DisableRealtimeMonitoring `$false -ErrorAction SilentlyContinue; " +
+               "Unregister-ScheduledTask -TaskName '$TaskName' -Confirm:`$false -ErrorAction SilentlyContinue"
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
+                    -Argument ('-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -Command "{0}"' -f $cmd)
+        # Dos disparadores: el plazo, y el arranque por si el equipo se reinicia antes.
+        $triggers = @(
+            (New-ScheduledTaskTrigger -Once -At ((Get-Date).AddMinutes($Minutes)))
+            (New-ScheduledTaskTrigger -AtStartup)
+        )
+        $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -RunLevel Highest
+        $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
+        $null = Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
+                    -Principal $principal -Settings $settings -Force -ErrorAction Stop `
+                    -Description 'Toolkit BPO: vuelve a activar la proteccion en tiempo real de Defender.'
+        return $true
+    } catch {
+        Write-Log "  ! No se pudo programar la reactivacion: $($_.Exception.Message)" -Level WARN
+        return $false
+    }
+}
+
+function Unregister-DefenderReenableTask {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$TaskName)
+    try {
+        if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
+            Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction Stop
+            Write-Log '  . Tarea de reactivacion automatica retirada (ya no hace falta).' -Level DEBUG
+        }
+    } catch { }
+}
+
+#endregion
+
+#region ---------- Informe ----------
+
+function Get-SupportReportData {
+    <#
+        Recoge de una vez todo lo que pide un ticket de escalado y lo devuelve
+        estructurado. Lo consumen el informe PDF/HTML y el volcado de texto.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $d = [ordered]@{
+        Equipo     = (Get-SupportSummary)
+        Antivirus  = (Get-AntivirusStatus -Quiet)
+        Audio      = (Test-AudioSetup)
+        Impresoras = @(Get-PrinterReport)
+        Update     = (Get-UpdateStatus)
+        Hora       = (Get-TimeStatus)
+        Eventos    = @(Get-RecentErrors)
+        Procesos   = @(Get-TopProcesses)
+        Red        = @()
+        Ubicacion  = $null
+        Usuarios   = @()
+        IpConfig   = ''
+    }
+
+    try {
+        $d.Red = @(Get-NetIPConfiguration -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{
+                Adaptador = $_.InterfaceAlias
+                Estado    = $_.NetAdapter.Status
+                IPv4      = ($_.IPv4Address.IPAddress -join ', ')
+                Puerta    = $_.IPv4DefaultGateway.NextHop
+                DNS       = (($_.DNSServer | Where-Object { $_.AddressFamily -eq 2 } | ForEach-Object { $_.ServerAddresses }) -join ', ')
+            }
+        })
+    } catch { }
+
+    if (Get-Command Test-LocationState -ErrorAction SilentlyContinue) {
+        try { $d.Ubicacion = Test-LocationState } catch { }
+    }
+    if (Get-Command Get-LocalUserInventory -ErrorAction SilentlyContinue) {
+        try { $d.Usuarios = @(Get-LocalUserInventory) } catch { }
+    }
+    try { $d.IpConfig = (& ipconfig.exe /all 2>&1 | Out-String) } catch { }
+
+    return $d
+}
+
+function ConvertTo-HtmlText {
+    <#
+        Escape minimo para meter texto en el informe sin romper el HTML.
+
+        El & NO se escapa cuando ya forma una entidad (&oacute;, &#241;...): los
+        modulos del toolkit se escriben en ASCII puro a proposito -- PowerShell
+        5.1 lee un .psm1 sin BOM como ANSI y destrozaria las tildes -- asi que
+        los rotulos del informe llevan las suyas como entidades HTML.
+    #>
+    param($Text)
+    if ($null -eq $Text) { return '' }
+    $s = [string]$Text
+    $s = [regex]::Replace($s, '&(?!([a-zA-Z]+|#\d+|#x[0-9A-Fa-f]+);)', '&amp;')
+    return $s.Replace('<', '&lt;').Replace('>', '&gt;').Replace('"', '&quot;')
+}
+
+function ConvertTo-SupportReportHtml {
+    <#
+        Informe formal: cabecera con los datos del ticket, veredicto, resumen con
+        semaforo, secciones en tablas y anexo tecnico. Pensado para imprimirse en
+        A4 y adjuntarse tal cual al ticket.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Data,
+        [string]$Tecnico,
+        [string]$Ticket,
+        [string]$Notas
+    )
+
+    $e   = { param($t) ConvertTo-HtmlText $t }
+    $eq  = $Data.Equipo
+    $av  = $Data.Antivirus
+    $now = Get-Date
+
+    # ---- Semaforo: cada indicador es ok / aviso / mal, con su explicacion ----
+    $checks = New-Object System.Collections.ArrayList
+    $addCheck = {
+        param($Nombre, $Estado, $Detalle)
+        $null = $checks.Add([pscustomobject]@{ Nombre = $Nombre; Estado = $Estado; Detalle = $Detalle })
+    }
+
+    $discoMin = 100
+    foreach ($disk in @($eq.Discos)) { if ($disk.LibrePct -lt $discoMin) { $discoMin = $disk.LibrePct } }
+    & $addCheck 'Espacio en disco' $(if ($discoMin -lt 10) { 'mal' } elseif ($discoMin -lt 20) { 'aviso' } else { 'ok' }) `
+                ((@($eq.Discos) | ForEach-Object { "$($_.Unidad) $($_.LibreGB) GB libres de $($_.TotalGB) GB ($($_.LibrePct) %)" }) -join '  -  ')
+
+    & $addCheck 'Memoria disponible' $(if ($eq.RAM_LibreGB -lt 1) { 'mal' } elseif ($eq.RAM_LibreGB -lt 2) { 'aviso' } else { 'ok' }) `
+                ("$($eq.RAM_LibreGB) GB libres de $($eq.RAM_GB) GB instalados")
+
+    $uptimeLevel = 'ok'
+    try { if (((Get-Date) - [datetime]$eq.UltimoArranque).TotalDays -gt 14) { $uptimeLevel = 'aviso' } } catch { }
+    & $addCheck 'Tiempo encendido' $uptimeLevel ("$($eq.Encendido) (desde $($eq.UltimoArranque))")
+
+    & $addCheck 'Antivirus' $(if ($av.TiempoRealActivo -or @($av.Productos | Where-Object { $_.Activo }).Count) { 'ok' } else { 'mal' }) `
+                $(if ($av.Productos.Count) { (@($av.Productos) | ForEach-Object { "$($_.Nombre): $(if ($_.Activo) { 'activo' } else { 'INACTIVO' })" }) -join '  -  ' } else { 'ning&uacute;n antivirus registrado' })
+
+    & $addCheck 'Actualizaciones' $(if ($Data.Update.ReinicioPendiente) { 'aviso' } else { 'ok' }) `
+                $(if ($Data.Update.ReinicioPendiente) { "Reinicio pendiente ($($Data.Update.Motivos -join ', '))" } else { "&Uacute;ltimo parche $($Data.Update.UltimoParche) del $($Data.Update.UltimoParcheFecha)" })
+
+    $desfase = $Data.Hora.DesfaseSeg
+    & $addCheck 'Hora del sistema' $(if ($null -eq $desfase) { 'aviso' } elseif ([math]::Abs($desfase) -gt 60) { 'mal' } elseif ([math]::Abs($desfase) -gt 5) { 'aviso' } else { 'ok' }) `
+                $(if ($null -eq $desfase) { 'sin sincronizar o desfase no legible' } else { ('desfase {0:N3} s, fuente {1}' -f $desfase, $Data.Hora.Fuente) })
+
+    & $addCheck 'Audio y micr&oacute;fono' $(if ($Data.Audio.Ok) { 'ok' } else { 'mal' }) `
+                $(if ($Data.Audio.Ok) { 'dispositivos, servicios y permisos correctos' } else { (@($Data.Audio.Issues) -join '  -  ') })
+
+    $criticos = @($Data.Eventos | Where-Object { $_.Id -in 41, 6008, 1001 -and $_.ProviderName -match 'Kernel-Power|EventLog|BugCheck' })
+    & $addCheck 'Eventos cr&iacute;ticos (24 h)' $(if ($criticos.Count -gt 0) { 'mal' } elseif ($Data.Eventos.Count -gt 50) { 'aviso' } else { 'ok' }) `
+                ("$($Data.Eventos.Count) errores registrados; $($criticos.Count) apagado(s) inesperado(s) o pantallazo(s)")
+
+    if ($Data.Ubicacion) {
+        & $addCheck 'Ubicaci&oacute;n (check-in)' $(if ($Data.Ubicacion.Compliant) { 'ok' } else { 'mal' }) `
+                    $(if ($Data.Ubicacion.Compliant) { 'configurada correctamente' } else { (@($Data.Ubicacion.Issues) -join '  -  ') })
+    }
+
+    $nMal   = @($checks | Where-Object { $_.Estado -eq 'mal' }).Count
+    $nAviso = @($checks | Where-Object { $_.Estado -eq 'aviso' }).Count
+    $veredicto = if ($nMal -gt 0) { "Requiere intervenci&oacute;n ($nMal incidencia(s), $nAviso punto(s) de atenci&oacute;n)" }
+                 elseif ($nAviso -gt 0) { "Operativo con $nAviso punto(s) de atenci&oacute;n" }
+                 else { 'Operativo, sin incidencias detectadas' }
+    $veredictoClase = if ($nMal -gt 0) { 'mal' } elseif ($nAviso -gt 0) { 'aviso' } else { 'ok' }
+
+    # ---- Construccion del documento ----
+    $sb = New-Object Text.StringBuilder
+    $w  = { param($t) [void]$sb.AppendLine($t) }
+
+    # Tabla clave/valor; se saltan los campos vacios para no ensuciar el informe.
+    $kv = { param($Titulo, $Pares)
+        & $w ("<section><h2>{0}</h2><table class=""kv"">" -f (& $e $Titulo))
+        foreach ($p in $Pares) {
+            if ($null -eq $p.Value -or "$($p.Value)".Trim() -eq '') { continue }
+            & $w ("<tr><th>{0}</th><td>{1}</td></tr>" -f (& $e $p.Key), (& $e $p.Value))
+        }
+        & $w '</table></section>'
+    }
+
+    # Tabla de filas: columnas = pares Key (titulo) / Value (scriptblock sobre la fila).
+    $grid = { param($Titulo, $Filas, $Columnas, $Vacio)
+        & $w ("<section><h2>{0}</h2>" -f (& $e $Titulo))
+        if (@($Filas).Count -eq 0) {
+            if ($Vacio) { & $w ("<p class=""muted"">{0}</p>" -f (& $e $Vacio)) }
+            & $w '</section>'
+            return
+        }
+        & $w '<table class="grid"><thead><tr>'
+        foreach ($c in $Columnas) { & $w ("<th>{0}</th>" -f (& $e $c.Key)) }
+        & $w '</tr></thead><tbody>'
+        foreach ($row in @($Filas)) {
+            & $w '<tr>'
+            foreach ($c in $Columnas) { & $w ("<td>{0}</td>" -f (& $e (& $c.Value $row))) }
+            & $w '</tr>'
+        }
+        & $w '</tbody></table></section>'
+    }
+
+    & $w '<!DOCTYPE html><html lang="es"><head><meta charset="utf-8">'
+    & $w ("<title>Informe de soporte - {0}</title>" -f (& $e $eq.Equipo))
+    & $w @'
+<style>
+  @page { size: A4; margin: 16mm 14mm 14mm 14mm; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Calibri, Arial, sans-serif; font-size: 10pt; color: #1b1f24; margin: 0; line-height: 1.45; }
+  header.doc { border-bottom: 3px solid #1f4e79; padding-bottom: 10px; margin-bottom: 16px; }
+  header.doc .org { font-size: 8.5pt; letter-spacing: .14em; text-transform: uppercase; color: #1f4e79; font-weight: 600; }
+  header.doc h1 { font-size: 19pt; margin: 4px 0 2px; font-weight: 600; }
+  header.doc .sub { color: #5b6672; font-size: 9pt; }
+  h2 { font-size: 11pt; margin: 18px 0 6px; padding-bottom: 4px; border-bottom: 1px solid #d7dde3;
+       color: #1f4e79; font-weight: 600; }
+  section { page-break-inside: avoid; }
+  table { width: 100%; border-collapse: collapse; }
+  table.kv th { width: 30%; text-align: left; font-weight: 600; color: #47525e; vertical-align: top;
+                padding: 4px 10px 4px 0; border-bottom: 1px solid #eef1f4; font-size: 9.5pt; }
+  table.kv td { padding: 4px 0; border-bottom: 1px solid #eef1f4; font-size: 9.5pt; }
+  table.grid { font-size: 9pt; }
+  table.grid thead th { background: #f2f5f8; text-align: left; font-weight: 600; color: #47525e;
+                        padding: 5px 8px; border-bottom: 1.5px solid #c9d2db; }
+  table.grid td { padding: 4px 8px; border-bottom: 1px solid #eef1f4; vertical-align: top; }
+  table.grid tbody tr:nth-child(even) td { background: #fafbfc; }
+  .verdict { padding: 10px 14px; border-radius: 4px; margin: 0 0 14px; font-weight: 600; border-left: 5px solid; }
+  .verdict.ok    { background: #eef7f0; border-color: #2e7d32; color: #205023; }
+  .verdict.aviso { background: #fdf6e9; border-color: #b26a00; color: #7a4a00; }
+  .verdict.mal   { background: #fdeeee; border-color: #b3261e; color: #7d1a15; }
+  .badge { display: inline-block; min-width: 62px; text-align: center; padding: 1px 8px; border-radius: 10px;
+           font-size: 8pt; font-weight: 600; }
+  .badge.ok    { background: #e3f1e5; color: #205023; }
+  .badge.aviso { background: #fbedd6; color: #7a4a00; }
+  .badge.mal   { background: #fadcda; color: #7d1a15; }
+  .muted { color: #6b7681; font-style: italic; font-size: 9pt; }
+  ul { margin: 4px 0 0 18px; padding: 0; }
+  li { margin: 2px 0; }
+  pre.raw { font-family: Consolas, "Courier New", monospace; font-size: 7.5pt; line-height: 1.3;
+            white-space: pre-wrap; word-break: break-all; background: #fafbfc; border: 1px solid #e3e8ed;
+            padding: 8px; border-radius: 3px; }
+  footer.doc { margin-top: 22px; padding-top: 8px; border-top: 1px solid #d7dde3; color: #6b7681; font-size: 8pt; }
+  .pagebreak { page-break-before: always; }
+</style></head><body>
+'@
+
+    & $w '<header class="doc">'
+    & $w '<div class="org">Toolkit BPO &middot; Soporte t&eacute;cnico</div>'
+    & $w '<h1>Informe de soporte t&eacute;cnico</h1>'
+    & $w ("<div class=""sub"">Equipo <strong>{0}</strong> &middot; generado el {1}</div>" -f (& $e $eq.Equipo), (& $e $now.ToString('dd/MM/yyyy HH:mm')))
+    & $w '</header>'
+
+    & $w ("<div class=""verdict {0}"">{1}</div>" -f $veredictoClase, (& $e $veredicto))
+
+    $ident = @(
+        @{ Key = 'N&uacute;mero de ticket';    Value = $(if ($Ticket) { $Ticket } else { '(no indicado)' }) }
+        @{ Key = 'T&eacute;cnico';             Value = $(if ($Tecnico) { $Tecnico } else { $env:USERNAME }) }
+        @{ Key = 'Equipo';              Value = $eq.Equipo }
+        @{ Key = 'Usuario con sesi&oacute;n';  Value = $eq.UsuarioSesion }
+        @{ Key = 'Dominio';             Value = $eq.Dominio }
+        @{ Key = 'Fabricante y modelo'; Value = ("{0} {1}" -f $eq.Fabricante, $eq.Modelo) }
+        @{ Key = 'N&uacute;mero de serie';     Value = $eq.NumeroSerie }
+        @{ Key = 'Sistema operativo';   Value = $eq.SistemaOp }
+        @{ Key = 'Direcciones IPv4';    Value = $eq.IPv4 }
+    )
+    if ($Notas) { $ident += @{ Key = 'Observaciones'; Value = $Notas } }
+    & $kv 'Identificaci&oacute;n' $ident
+
+    & $w '<section><h2>Resumen del estado</h2><table class="grid"><thead><tr><th style="width:24%">Comprobaci&oacute;n</th><th style="width:14%">Estado</th><th>Detalle</th></tr></thead><tbody>'
+    foreach ($c in $checks) {
+        $texto = switch ($c.Estado) { 'ok' { 'Correcto' } 'aviso' { 'Atenci&oacute;n' } default { 'Incidencia' } }
+        & $w ("<tr><td>{0}</td><td><span class=""badge {1}"">{2}</span></td><td>{3}</td></tr>" -f
+              (& $e $c.Nombre), $c.Estado, $texto, (& $e $c.Detalle))
+    }
+    & $w '</tbody></table></section>'
+
+    & $kv 'Hardware' @(
+        @{ Key = 'Procesador';      Value = $eq.CPU }
+        @{ Key = 'Memoria RAM';     Value = ("{0} GB instalados, {1} GB libres" -f $eq.RAM_GB, $eq.RAM_LibreGB) }
+        @{ Key = 'Almacenamiento';  Value = ((@($eq.Discos) | ForEach-Object { "$($_.Unidad) $($_.LibreGB) de $($_.TotalGB) GB libres ($($_.LibrePct) %)" }) -join '  -  ') }
+        @{ Key = 'BIOS';            Value = $eq.BIOS }
+        @{ Key = 'TPM';             Value = $eq.TPM }
+        @{ Key = 'Arranque seguro'; Value = $eq.SecureBoot }
+        @{ Key = '&Uacute;ltimo arranque'; Value = ("{0} (encendido {1})" -f $eq.UltimoArranque, $eq.Encendido) }
+    )
+
+    & $kv 'Seguridad' @(
+        @{ Key = 'Antivirus registrados'; Value = $(if ($av.Productos.Count) { (@($av.Productos) | ForEach-Object { "$($_.Nombre) [$(if ($_.Activo) { 'activo' } else { 'inactivo' }), firmas $(if ($_.FirmasAlDia) { 'al dia' } else { 'desactualizadas' })]" }) -join '  -  ' } else { 'ninguno registrado' }) }
+        @{ Key = 'Protecci&oacute;n en tiempo real'; Value = $(if ($null -eq $av.TiempoRealActivo) { '' } elseif ($av.TiempoRealActivo) { 'Activa' } else { 'DESACTIVADA' }) }
+        @{ Key = 'Modo de Defender';          Value = $av.DefenderModo }
+        @{ Key = 'Firmas de Defender';        Value = $(if ($av.FirmasVersion) { "$($av.FirmasVersion) ($($av.FirmasFecha))" } else { '' }) }
+        @{ Key = 'Protecci&oacute;n antimanipulaci&oacute;n'; Value = $(if ($null -eq $av.TamperProtection) { '' } elseif ($av.TamperProtection) { 'Activa' } else { 'Desactivada' }) }
+    )
+
+    & $kv 'Sistema operativo y actualizaciones' @(
+        @{ Key = '&Uacute;ltimo parche';               Value = ("{0} ({1})" -f $Data.Update.UltimoParche, $Data.Update.UltimoParcheFecha) }
+        @{ Key = '&Uacute;ltima instalaci&oacute;n correcta'; Value = $Data.Update.UltimaInstalacionOK }
+        @{ Key = 'Servicio Windows Update';     Value = $Data.Update.Servicio }
+        @{ Key = 'Reinicio pendiente';          Value = $(if ($Data.Update.ReinicioPendiente) { "SI ($($Data.Update.Motivos -join ', '))" } else { 'No' }) }
+        @{ Key = 'Zona horaria';                Value = $Data.Hora.ZonaHoraria }
+        @{ Key = 'Fuente de hora';              Value = $Data.Hora.Fuente }
+        @{ Key = 'Desfase horario';             Value = $(if ($null -ne $Data.Hora.DesfaseSeg) { ('{0:N3} s' -f $Data.Hora.DesfaseSeg) } else { 'no disponible' }) }
+    )
+
+    & $w '<section><h2>Audio y micr&oacute;fono</h2>'
+    if ($Data.Audio.Ok) { & $w '<p>Servicios de audio, dispositivos y permisos de micr&oacute;fono y c&aacute;mara correctos.</p>' }
+    else {
+        & $w '<p>Incidencias detectadas:</p><ul>'
+        foreach ($i in @($Data.Audio.Issues)) { & $w ("<li>{0}</li>" -f (& $e $i)) }
+        & $w '</ul>'
+    }
+    & $w '</section>'
+
+    & $grid 'Configuraci&oacute;n de red' $Data.Red @(
+        @{ Key = 'Adaptador';        Value = { param($r) $r.Adaptador } }
+        @{ Key = 'Estado';           Value = { param($r) $r.Estado } }
+        @{ Key = 'IPv4';             Value = { param($r) $r.IPv4 } }
+        @{ Key = 'Puerta de enlace'; Value = { param($r) $r.Puerta } }
+        @{ Key = 'DNS';              Value = { param($r) $r.DNS } }
+    ) 'No se pudo leer la configuraci&oacute;n de red.'
+
+    & $grid 'Impresoras' $Data.Impresoras @(
+        @{ Key = 'Nombre';          Value = { param($r) $r.Nombre } }
+        @{ Key = 'Predeterminada';  Value = { param($r) $(if ($r.Predeterminada) { 'Si' } else { '' }) } }
+        @{ Key = 'Estado';          Value = { param($r) $r.Estado } }
+        @{ Key = 'Cola';            Value = { param($r) $r.Trabajos } }
+        @{ Key = 'Puerto';          Value = { param($r) $r.Puerto } }
+    ) 'No hay impresoras instaladas en este equipo.'
+
+    $grupos = @($Data.Eventos | Group-Object ProviderName, Id | Sort-Object Count -Descending | Select-Object -First 15)
+    & $grid 'Errores del sistema (&uacute;ltimas 24 horas)' $grupos @(
+        @{ Key = 'Veces';    Value = { param($r) $r.Count } }
+        @{ Key = 'Registro'; Value = { param($r) ($r.Group | Select-Object -First 1).LogName } }
+        @{ Key = 'Origen';   Value = { param($r) ($r.Group | Select-Object -First 1).ProviderName } }
+        @{ Key = 'Id';       Value = { param($r) ($r.Group | Select-Object -First 1).Id } }
+        @{ Key = '&Uacute;ltimo mensaje'; Value = { param($r)
+            $m = ($r.Group | Sort-Object TimeCreated -Descending | Select-Object -First 1).Message
+            if (-not $m) { return '' }
+            $m = ($m -split "`r?`n")[0]
+            if ($m.Length -gt 120) { $m.Substring(0, 120) + '...' } else { $m } } }
+    ) 'Sin errores ni eventos cr&iacute;ticos en las &uacute;ltimas 24 horas.'
+
+    & $grid 'Procesos con mayor consumo' (@($Data.Procesos | Sort-Object CpuPct -Descending | Select-Object -First 10)) @(
+        @{ Key = 'Proceso';      Value = { param($r) $r.Proceso } }
+        @{ Key = 'PID';          Value = { param($r) $r.PID } }
+        @{ Key = 'CPU %';        Value = { param($r) ('{0:N1}' -f $r.CpuPct) } }
+        @{ Key = 'Memoria (MB)'; Value = { param($r) $r.MemMB } }
+        @{ Key = 'Ventana';      Value = { param($r) $r.Titulo } }
+    ) 'Sin datos de procesos.'
+
+    if (@($Data.Usuarios).Count -gt 0) {
+        & $grid 'Cuentas locales' $Data.Usuarios @(
+            @{ Key = 'Usuario';       Value = { param($r) $r.Name } }
+            @{ Key = 'Habilitada';    Value = { param($r) $(if ($r.Enabled) { 'Si' } else { 'No' }) } }
+            @{ Key = 'Administrador'; Value = { param($r) $(if ($r.IsAdmin) { 'Si' } else { '' }) } }
+            @{ Key = 'Contrase&ntilde;a';    Value = { param($r) $(if ($r.PasswordRequired) { 'Requerida' } else { 'NO requerida' }) } }
+            @{ Key = '&Uacute;ltimo inicio'; Value = { param($r) $r.LastLogon } }
+        ) ''
+    }
+
+    if ($Data.Ubicacion) {
+        & $kv 'Ubicaci&oacute;n (check-in de Zoho)' @(
+            @{ Key = 'Configuraci&oacute;n correcta';   Value = $(if ($Data.Ubicacion.Compliant) { 'Si' } else { 'No' }) }
+            @{ Key = 'Servicio de ubicaci&oacute;n';    Value = $Data.Ubicacion.ServiceStatus }
+            @{ Key = 'Conmutador general';       Value = $Data.Ubicacion.MasterSwitch }
+            @{ Key = 'Permiso del equipo';       Value = $Data.Ubicacion.ConsentMachine }
+            @{ Key = 'Permiso apps de escritorio'; Value = $Data.Ubicacion.ConsentNonPackaged }
+            @{ Key = 'Incidencias';              Value = (@($Data.Ubicacion.Issues) -join '  -  ') }
+        )
+    }
+
+    & $w '<div class="pagebreak"></div>'
+    & $w '<section><h2>Anexo: configuraci&oacute;n de red completa (ipconfig /all)</h2>'
+    & $w ("<pre class=""raw"">{0}</pre>" -f (& $e ("$($Data.IpConfig)".Trim())))
+    & $w '</section>'
+
+    & $w ("<footer class=""doc"">Documento generado autom&aacute;ticamente por Toolkit BPO {0} el {1} en el equipo {2}.<br>Registro completo de la ejecuci&oacute;n: {3}</footer>" -f
+          (& $e (Get-ToolkitVersion)), (& $e $now.ToString('dd/MM/yyyy HH:mm:ss')), (& $e $eq.Equipo), (& $e (Get-ToolkitLogPath)))
+    & $w '</body></html>'
+
+    return $sb.ToString()
+}
+
+function Convert-HtmlToPdf {
+    <#
+        Convierte el HTML a PDF con Edge (o Chrome) en modo headless: es el unico
+        conversor a PDF que trae Windows 10 de serie y que se puede pilotar sin
+        interfaz. "Microsoft Print to PDF" necesita una aplicacion que imprima y
+        abre un dialogo de guardado, asi que no sirve aqui.
+
+        Devuelve la ruta del PDF, o $null si no se pudo (el llamador se queda con
+        el HTML, que ya es un informe presentable).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$HtmlPath,
+        [Parameter(Mandatory)][string]$PdfPath,
+        [int]$TimeoutSeconds = 180
+    )
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe')
+        (Join-Path $env:ProgramFiles 'Google\Chrome\Application\chrome.exe')
+        (Join-Path ${env:ProgramFiles(x86)} 'Google\Chrome\Application\chrome.exe')
+    )
+    foreach ($key in 'msedge.exe', 'chrome.exe') {
+        $p = Get-RegValue -Path "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\$key" -Name '(default)'
+        if ($p) { $candidates += $p }
+    }
+
+    $browser = @($candidates | Where-Object { $_ -and (Test-Path -LiteralPath $_) }) | Select-Object -First 1
+    if (-not $browser) {
+        Write-Log '  ! No se encontro Edge ni Chrome: no se puede generar el PDF.' -Level WARN
+        return $null
+    }
+
+    # Perfil propio y desechable: con el perfil del usuario, Edge se niega a
+    # arrancar en headless si ya hay una ventana abierta (el perfil esta bloqueado).
+    $profileDir = Join-Path $env:TEMP ('toolkit-pdf-{0}' -f ([guid]::NewGuid().ToString('N').Substring(0, 8)))
+    $fileUrl    = 'file:///' + ($HtmlPath -replace '\\', '/')
+
+    try {
+        # --headless=new es lo actual; las versiones viejas solo entienden --headless.
+        foreach ($mode in '--headless=new', '--headless') {
+            $argList = @(
+                $mode
+                '--disable-gpu'
+                '--no-first-run'
+                '--no-default-browser-check'
+                '--disable-extensions'
+                '--disable-sync'
+                '--run-all-compositor-stages-before-draw'
+                '--virtual-time-budget=5000'
+                ('--user-data-dir="{0}"' -f $profileDir)
+                '--no-pdf-header-footer'
+                ('--print-to-pdf="{0}"' -f $PdfPath)
+                ('"{0}"' -f $fileUrl)
+            ) -join ' '
+
+            try {
+                $proc = Start-Process -FilePath $browser -ArgumentList $argList -PassThru -WindowStyle Hidden -ErrorAction Stop
+                if (-not $proc.WaitForExit($TimeoutSeconds * 1000)) { try { $proc.Kill() } catch { } }
+            } catch {
+                Write-Log "  ! Fallo lanzando el conversor a PDF: $($_.Exception.Message)" -Level WARN
+                break
+            }
+
+            if ((Test-Path -LiteralPath $PdfPath) -and (Get-Item -LiteralPath $PdfPath).Length -gt 1024) { return $PdfPath }
+        }
+    } finally {
+        Remove-Item -LiteralPath $profileDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    Write-Log ("  ! {0} no genero el PDF. Se entrega el informe en HTML." -f (Split-Path $browser -Leaf)) -Level WARN
+    return $null
+}
 
 function Export-SupportReport {
     <#
-        Reporte de texto con todo lo que pide un ticket de escalado, guardado en
-        <Root>\reports. Devuelve la ruta.
+        Informe de soporte para el ticket, guardado en <Root>\reports. Devuelve la ruta.
+
+        Formatos:
+          Pdf   (por defecto) informe formal listo para adjuntar al ticket
+          Html  el mismo informe sin convertir (si el equipo no tiene Edge ni Chrome)
+          Texto el volcado plano de siempre, para pegar en una consola
     #>
     [CmdletBinding()]
-    param([string]$Root = 'C:\ProgramData\Toolkit')
+    param(
+        [string]$Root = 'C:\ProgramData\Toolkit',
+        [ValidateSet('Pdf', 'Html', 'Texto')][string]$Format = 'Pdf',
+        [string]$Tecnico,
+        [string]$Ticket,
+        [string]$Notas
+    )
 
-    Write-Log 'REPORTE PARA TICKET' -Level STEP
+    Write-Log 'INFORME PARA TICKET' -Level STEP
     $dir = Join-Path $Root 'reports'
     New-Item -ItemType Directory -Path $dir -Force | Out-Null
-    $path = Join-Path $dir ('soporte-{0}-{1}.txt' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm'))
+    $stamp = '{0}-{1}' -f $env:COMPUTERNAME, (Get-Date -Format 'yyyyMMdd-HHmm')
 
-    $sb = New-Object Text.StringBuilder
-    $add = { param($title, $obj)
-        [void]$sb.AppendLine(('=' * 78)); [void]$sb.AppendLine("  $title"); [void]$sb.AppendLine(('=' * 78))
-        [void]$sb.AppendLine((($obj | Format-List * | Out-String -Width 120).Trim())); [void]$sb.AppendLine()
-    }
-    [void]$sb.AppendLine("TOOLKIT BPO - REPORTE DE SOPORTE   $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
-    [void]$sb.AppendLine()
-    & $add 'EQUIPO'          (Get-SupportSummary)
-    & $add 'AUDIO'           (Test-AudioSetup | Select-Object Ok, @{n='Issues';e={$_.Issues -join '; '}})
-    & $add 'IMPRESORAS'      (Get-PrinterReport)
-    & $add 'WINDOWS UPDATE'  (Get-UpdateStatus)
-    & $add 'HORA'            (Get-TimeStatus)
-    & $add 'ERRORES 24 H'    (Get-RecentErrors | Group-Object ProviderName, Id | Sort-Object Count -Descending | Select-Object -First 15 Count, Name)
-    & $add 'PROCESOS'        (Get-TopProcesses | Select-Object -First 10 Proceso, PID, CpuPct, MemMB)
-    if (Get-Command Test-LocationState -ErrorAction SilentlyContinue) {
-        & $add 'UBICACION' (Test-LocationState | Select-Object Compliant, @{n='Issues';e={$_.Issues -join '; '}}, ServiceStatus, MasterSwitch, ConsentMachine, ConsentNonPackaged)
-    }
-    if (Get-Command Get-LocalUserInventory -ErrorAction SilentlyContinue) {
-        & $add 'USUARIOS LOCALES' (Get-LocalUserInventory | Select-Object Name, Enabled, IsAdmin, PasswordRequired, LastLogon)
-    }
-    [void]$sb.AppendLine(('=' * 78)); [void]$sb.AppendLine('  RED (ipconfig /all)'); [void]$sb.AppendLine(('=' * 78))
-    [void]$sb.AppendLine((& ipconfig.exe /all 2>&1 | Out-String))
+    $data = Get-SupportReportData
 
-    [IO.File]::WriteAllText($path, $sb.ToString(), (New-Object Text.UTF8Encoding($false)))
-    Write-Log "  + Reporte guardado: $path" -Level OK
-    return $path
+    if ($Format -eq 'Texto') {
+        $path = Join-Path $dir ("soporte-$stamp.txt")
+        $sb = New-Object Text.StringBuilder
+        $add = { param($title, $obj)
+            [void]$sb.AppendLine(('=' * 78)); [void]$sb.AppendLine("  $title"); [void]$sb.AppendLine(('=' * 78))
+            [void]$sb.AppendLine((($obj | Format-List * | Out-String -Width 120).Trim())); [void]$sb.AppendLine()
+        }
+        [void]$sb.AppendLine("TOOLKIT BPO - INFORME DE SOPORTE   $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
+        [void]$sb.AppendLine()
+        & $add 'EQUIPO'          $data.Equipo
+        & $add 'ANTIVIRUS'       ($data.Antivirus | Select-Object @{n='Productos';e={(@($_.Productos).Nombre) -join ', '}}, TiempoRealActivo, DefenderModo, TamperProtection)
+        & $add 'AUDIO'           ($data.Audio | Select-Object Ok, @{n='Issues';e={$_.Issues -join '; '}})
+        & $add 'IMPRESORAS'      $data.Impresoras
+        & $add 'WINDOWS UPDATE'  $data.Update
+        & $add 'HORA'            $data.Hora
+        & $add 'ERRORES 24 H'    ($data.Eventos | Group-Object ProviderName, Id | Sort-Object Count -Descending | Select-Object -First 15 Count, Name)
+        & $add 'PROCESOS'        ($data.Procesos | Select-Object -First 10 Proceso, PID, CpuPct, MemMB)
+        if ($data.Ubicacion) { & $add 'UBICACION' ($data.Ubicacion | Select-Object Compliant, @{n='Issues';e={$_.Issues -join '; '}}, ServiceStatus, MasterSwitch, ConsentMachine, ConsentNonPackaged) }
+        if (@($data.Usuarios).Count) { & $add 'USUARIOS LOCALES' ($data.Usuarios | Select-Object Name, Enabled, IsAdmin, PasswordRequired, LastLogon) }
+        [void]$sb.AppendLine(('=' * 78)); [void]$sb.AppendLine('  RED (ipconfig /all)'); [void]$sb.AppendLine(('=' * 78))
+        [void]$sb.AppendLine($data.IpConfig)
+
+        [IO.File]::WriteAllText($path, $sb.ToString(), (New-Object Text.UTF8Encoding($false)))
+        Write-Log "  + Informe guardado: $path" -Level OK
+        return $path
+    }
+
+    $html     = ConvertTo-SupportReportHtml -Data $data -Tecnico $Tecnico -Ticket $Ticket -Notas $Notas
+    $htmlPath = Join-Path $dir ("soporte-$stamp.html")
+    [IO.File]::WriteAllText($htmlPath, $html, (New-Object Text.UTF8Encoding($false)))
+
+    if ($Format -eq 'Html') {
+        Write-Log "  + Informe guardado: $htmlPath" -Level OK
+        return $htmlPath
+    }
+
+    Write-Log '  > Convirtiendo el informe a PDF...' -Level INFO
+    $pdfPath = Convert-HtmlToPdf -HtmlPath $htmlPath -PdfPath (Join-Path $dir ("soporte-$stamp.pdf"))
+    if ($pdfPath) {
+        Remove-Item -LiteralPath $htmlPath -Force -ErrorAction SilentlyContinue
+        Write-Log "  + Informe PDF guardado: $pdfPath" -Level OK
+        return $pdfPath
+    }
+
+    Write-Log "  + Informe HTML guardado: $htmlPath (abrelo y usa Imprimir > Guardar como PDF)" -Level WARN
+    return $htmlPath
 }
 
 #endregion
@@ -718,8 +1392,9 @@ function Invoke-ForEachUserHive {
 
 Export-ModuleMember -Function @(
     'Get-SupportSummary', 'Test-AudioSetup', 'Get-PrinterReport', 'Get-UpdateStatus', 'Get-TimeStatus',
-    'Get-RecentErrors', 'Get-TopProcesses',
+    'Get-RecentErrors', 'Get-TopProcesses', 'Get-AntivirusStatus',
     'Repair-Network', 'Restart-SupportService', 'Restart-AudioServices', 'Clear-PrintQueue', 'Sync-SystemTime',
     'Clear-TempFiles', 'Enable-MediaConsent', 'Set-NoSleepPower', 'Start-UpdateScan', 'Repair-SystemFiles',
-    'Restart-ComputerDelayed', 'Export-SupportReport'
+    'Set-DefenderRealtime', 'Restart-ComputerDelayed',
+    'Export-SupportReport', 'Get-SupportReportData', 'ConvertTo-SupportReportHtml', 'Convert-HtmlToPdf'
 )

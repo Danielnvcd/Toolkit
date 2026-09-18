@@ -138,6 +138,43 @@ namespace Toolkit.App
         }
     }
 
+    /// <summary>
+    /// Datos de cabecera del informe para el ticket. Todo es opcional: si el
+    /// técnico no pone nada, el informe sale igual con el usuario de la sesión.
+    /// </summary>
+    internal sealed class ReportDialog : InputDialog
+    {
+        private readonly TextBox _ticket, _tecnico, _notas;
+        private readonly CheckBox _texto;
+
+        public string Ticket   => _ticket.Text.Trim();
+        public string Tecnico  => _tecnico.Text.Trim();
+        public string Notas    => _notas.Text.Trim();
+        /// <summary>Formato tal y como lo espera Export-SupportReport.</summary>
+        public string Formato  => _texto.Checked ? "Texto" : "Pdf";
+
+        public ReportDialog() : base("Informe para el ticket", "Generar informe", 470)
+        {
+            var intro = new Label
+            {
+                Text = "Se genera un informe en PDF con el estado del equipo, listo para adjuntar al ticket.",
+                AutoSize = true, MaximumSize = new Size(400, 0), ForeColor = Theme.TextMuted,
+                Margin = new Padding(0, 0, 0, 12)
+            };
+            Grid.Controls.Add(intro, 0, 0);
+            Grid.SetColumnSpan(intro, 2);
+
+            AddLabel("Nº de ticket", 1); _ticket  = AddBox(1);
+            AddLabel("Técnico", 2);      _tecnico = AddBox(2);
+            AddLabel("Observaciones", 3); _notas  = AddBox(3);
+            _texto = AddCheck("Texto plano en vez de PDF", 4);
+
+            _tecnico.Text = Environment.UserName;
+        }
+
+        protected override bool ValidateInput() => true;
+    }
+
     /// <summary>Datos para crear una cuenta local nueva.</summary>
     internal sealed class NewUserDialog : InputDialog
     {

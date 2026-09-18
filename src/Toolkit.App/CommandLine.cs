@@ -16,6 +16,10 @@ namespace Toolkit.App
         public bool NoBrowsers { get; set; }
         public bool CheckIn { get; set; }
         public bool Force { get; set; }
+        /// <summary>Reinstalar las aplicaciones de /apps aunque ya esten (subir de version).</summary>
+        public bool Reinstall { get; set; }
+        /// <summary>Desinstalar las aplicaciones de /apps en vez de instalarlas.</summary>
+        public bool UninstallApps { get; set; }
         public bool ShowHelp { get; set; }
 
         public List<string> Modules { get; set; } = new List<string>();
@@ -73,7 +77,7 @@ namespace Toolkit.App
                     case "support":
                         // /support:info,audio,report  (sin lista = todo lo de lectura + reporte)
                         a.Support.AddRange(SplitList(value));
-                        if (a.Support.Count == 0) a.Support.AddRange(new[] { "info", "audio", "printers", "update", "time", "events", "procs", "report" });
+                        if (a.Support.Count == 0) a.Support.AddRange(new[] { "info", "audio", "printers", "update", "time", "events", "procs", "antivirus", "report" });
                         break;
 
                     case "report": case "audit":
@@ -93,6 +97,11 @@ namespace Toolkit.App
                         a.Modules = new List<string> { "location" };
                         break;
                     case "force":           a.Force = true; break;
+                    case "reinstall":       a.Reinstall = true; break;
+                    case "uninstall-apps":
+                        a.UninstallApps = true;
+                        if (!a.Modules.Contains("apps")) a.Modules.Add("apps");
+                        break;
 
                     case "share":  a.SharePath = value; break;
                     case "config": a.ConfigPath = value; break;
@@ -136,11 +145,13 @@ Actualizaciones y guia de uso: " + Program.UpdatesUrl + @"
   Toolkit.exe /report                  Auditoria: evalua SIN modificar nada
   Toolkit.exe /checkin                 Comprueba si el check-in de Zoho con ubicacion
                                        funcionara en el navegador (no modifica nada)
-  Toolkit.exe /support                 Diagnostico de soporte completo + reporte para ticket
+  Toolkit.exe /support                 Diagnostico completo + informe PDF para el ticket
   Toolkit.exe /support:audio,events    Solo esas acciones (info, audio, printers, update,
-                                       time, events, procs, report)
+                                       time, events, procs, antivirus, report, report-txt)
   Toolkit.exe /silent /modules:location,network
   Toolkit.exe /silent /apps:genesys-cloud,krisp
+  Toolkit.exe /silent /apps:krisp /reinstall        Reinstala encima (subir de version)
+  Toolkit.exe /silent /apps:krisp /uninstall-apps   Desinstala esas aplicaciones
   Toolkit.exe /rollback                Revierte los cambios de registro
   Toolkit.exe /install-agent /share:\\SRV-FILE\Toolkit$ /ring:1-piloto
   Toolkit.exe /uninstall-agent
@@ -150,6 +161,8 @@ OPCIONES
                      'users' solo inventaria las cuentas locales; las acciones
                      (contrasena, eliminar, crear) estan en la interfaz grafica
   /apps:<lista>      ids concretos del catalogo
+  /reinstall         instala aunque ya esten puestas (para subir de version)
+  /uninstall-apps    desinstala los ids de /apps en vez de instalarlos
   /share:<ruta>      share UNC para reportes, catalogo y paquetes
   /config:<ruta>     catalog.json alternativo (por defecto: el embebido)
   /ring:<nombre>     anillo de despliegue del agente

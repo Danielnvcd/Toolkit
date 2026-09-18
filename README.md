@@ -7,7 +7,7 @@ Utilidad portable para Windows 10/11 que resuelve, desde una sola ventana, las t
 - **Instalar aplicaciones** en silencio a partir de un catálogo.
 - **Diagnosticar la red**: latencia, jitter, pérdida de paquetes, DNS, MTU, puertos y TLS.
 - **Firewall y bloqueos**: saber si una conexión falla por el firewall (y por qué regla), pausarlo 5 minutos con reactivación automática, cortar la red a un programa y bloquear redes sociales, vídeo, mensajería, juegos o apuestas en los navegadores y en apps de escritorio.
-- **Soporte de primer nivel**: info del equipo, audio y micrófono, impresoras, hora, temporales, reparar red, reporte para ticket.
+- **Soporte de primer nivel**: info del equipo, audio y micrófono, impresoras, hora, temporales, reparar red, antivirus e informe PDF para el ticket.
 
 Es **un único archivo**, `Toolkit.exe`. No se instala: se copia a un USB o a una carpeta compartida y se ejecuta. Todo lo que necesita ya viene con Windows.
 
@@ -29,7 +29,7 @@ Si algo no te convence, **Revertir** (en la pestaña Ubicación) deshace todos l
 
 ### Alta de puesto
 
-Para un equipo nuevo. En un solo clic y con una sola confirmación aplica, en orden: ubicación (con las opciones de la página Ubicación), micrófono y cámara para todos los usuarios, no suspender con corriente, hora por NTP, instalación de las aplicaciones del catálogo con `enabled=true` que falten, comprobación del check-in de Zoho y reporte para el ticket. Cada paso se puede desmarcar. Al terminar muestra un resumen paso a paso y abre la carpeta del reporte; **Cancelar** en la barra de estado detiene la secuencia.
+Para un equipo nuevo. En un solo clic y con una sola confirmación aplica, en orden: ubicación (con las opciones de la página Ubicación), micrófono y cámara para todos los usuarios, no suspender con corriente, hora por NTP, instalación de las aplicaciones del catálogo con `enabled=true` que falten, comprobación del check-in de Zoho e informe PDF del equipo. Cada paso se puede desmarcar. Al terminar muestra un resumen paso a paso y abre la carpeta del informe; **Cancelar** en la barra de estado detiene la secuencia.
 
 ### Ubicación
 
@@ -80,6 +80,12 @@ Al abrir la página se ve, para cada aplicación del catálogo, si está **insta
 
 Instala en silencio las aplicaciones definidas en `catalog.json` (MSI, EXE o un ZIP que los contenga): exige `sha256` en la ficha y descarga solo por HTTPS, comprueba el hash del instalador, espera si otro instalador está en marcha, reintenta y verifica que la aplicación quedó instalada. Ver la sección *Configurar* para añadir las tuyas.
 
+**Poner una versión más nueva.** Si algo de lo marcado ya está instalado, al pulsar *Instalar seleccionadas* el toolkit pregunta qué hacer: **reinstalar encima** (lo normal: casi todos los instaladores actualizan sobre la versión anterior) o **desinstalar y volver a instalar**, para los fabricantes que no admiten actualizar encima. Sin esto el motor se limitaría a decir "ya instalado" y no habría forma de subir de versión desde la interfaz.
+
+**Desinstalar** quita del equipo lo que esté marcado. Usa la desinstalación silenciosa del fabricante: `msiexec /x {ProductCode}` en los MSI y la `QuietUninstallString` del registro en los EXE. Si una aplicación no publica ninguna de las dos, se abre su desinstalador en pantalla para completarlo a mano (solo desde la interfaz; en desatendido se marca como fallo en vez de dejar una ventana abierta). Se puede fijar el conmutador exacto con `uninstallArgs` en la ficha.
+
+**La detección mira también las instalaciones por usuario.** Genesys Cloud, Krisp sin `INSTALLPERUSER=0` y compañía se registran en la rama del *agente*, no en la del equipo; como el toolkit corre elevado, su `HKCU` es la del administrador y allí no hay nada. Se recorren todas las colmenas de usuario cargadas, y tras instalar se espera a que el instalador termine de verdad (los paquetes WiX Burn relanzan una copia elevada y el proceso original devuelve 0 antes de tiempo) y se reintenta la detección hasta 3 minutos. Si aun así el instalador dice que fue bien y la ficha no encuentra la aplicación, sale un **aviso** para revisar `detection` en el catálogo, no un fallo: la aplicación suele estar puesta.
+
 ### Red
 
 Mide contra los destinos que indiques en `catalog.json`: ping (latencia, jitter y pérdida), resolución DNS, puertos TCP, certificados TLS, MTU y proxy. Sirve para saber si un "va lento" o "se corta" es culpa de la red o del equipo.
@@ -121,6 +127,7 @@ Las herramientas de un clic que un técnico de primer nivel usa a diario. Todas 
 | Hora del sistema | Hora, zona horaria, fuente NTP y desfase |
 | Errores recientes (24 h) | Errores y críticos del registro de eventos agrupados por origen; marca apagados inesperados y fallos de disco |
 | Procesos que más consumen | Top por CPU y por memoria, con el título de ventana |
+| Estado del antivirus | Antivirus registrados en el Centro de seguridad, cuál está activo, protección en tiempo real, firmas y protección antimanipulación |
 
 | Reparación | Qué hace |
 |---|---|
@@ -136,7 +143,9 @@ Las herramientas de un clic que un técnico de primer nivel usa a diario. Todas 
 | Reparar archivos del sistema | `sfc /scannow` (5-20 min) |
 | Reiniciar equipo (60 s) / Cancelar | Reinicio con aviso de Windows y cuenta atrás para que el agente guarde |
 
-**Guardar reporte para ticket** genera un `.txt` con todo lo anterior más ubicación, usuarios e `ipconfig /all` en `C:\ProgramData\Toolkit\reports\` y lo abre en el Explorador, listo para adjuntar a un escalado. **Copiar log** copia lo que hay en pantalla al portapapeles.
+**Antivirus.** *Desactivar 30 min* apaga la protección en tiempo real de Microsoft Defender, para cuando el analizador bloquea un instalador corporativo legítimo y el técnico está delante. La reactivación no depende de que nadie se acuerde: al desactivar se programa una tarea de `SYSTEM` que la vuelve a encender a los 30 minutos **y también en el siguiente arranque**, y se borra sola; *Reactivar ahora* la enciende sin esperar y retira la tarea. No se hace nada —y se dice por qué— si la **protección contra manipulaciones** está activa (Windows ignora cualquier script; hay que quitarla en Seguridad de Windows o desde Intune), si Defender está gobernado por directiva, o si el antivirus del equipo es de terceros: en ese caso Defender está en modo pasivo y hay que pausarlo desde su propia consola.
+
+**Informe para el ticket** pide el número de ticket, el técnico y unas observaciones, y genera un **PDF** formal en `C:\ProgramData\Toolkit\reports\`: veredicto del equipo, identificación, resumen con semáforo (disco, memoria, tiempo encendido, antivirus, actualizaciones, hora, audio, eventos críticos, ubicación), hardware, seguridad, red, impresoras, errores de las últimas 24 h, procesos, cuentas locales y un anexo con `ipconfig /all`. Al terminar lo abre. La conversión a PDF la hace Edge (o Chrome) en modo headless, que es el único conversor que trae Windows 10 de serie; si no hay ninguno de los dos, el informe se entrega en HTML con el mismo aspecto. La casilla *Texto plano en vez de PDF* devuelve el volcado de siempre para pegar en una consola. **Copiar log** copia lo que hay en pantalla al portapapeles.
 
 ---
 
@@ -149,11 +158,13 @@ Toolkit.exe                                # interfaz gráfica
 Toolkit.exe /report                        # auditoría completa, no modifica nada
 Toolkit.exe /report /modules:users         # solo el inventario de cuentas
 Toolkit.exe /checkin                       # ¿funcionará el check-in de Zoho con ubicación? no modifica nada
-Toolkit.exe /support                       # diagnóstico de soporte completo + reporte para ticket
-Toolkit.exe /support:audio,events          # solo esas acciones (info, audio, printers, update, time, events, procs, report)
+Toolkit.exe /support                       # diagnóstico completo + informe PDF para el ticket
+Toolkit.exe /support:audio,events          # solo esas acciones (info, audio, printers, update, time, events, procs, antivirus, report, report-txt)
 Toolkit.exe /silent /all                   # aplica todo sin preguntar
 Toolkit.exe /silent /modules:location      # solo la ubicación
 Toolkit.exe /silent /apps:ejemplo-7zip     # solo esas apps del catálogo
+Toolkit.exe /silent /apps:krisp /reinstall        # reinstala encima (para subir de versión)
+Toolkit.exe /silent /apps:krisp /uninstall-apps   # desinstala esas apps
 Toolkit.exe /rollback                      # revierte los cambios de registro
 Toolkit.exe /nolockdown                    # no bloquea el interruptor de ubicación al usuario
 Toolkit.exe /?                             # ayuda completa
@@ -205,6 +216,14 @@ scripts\tools\New-AppFicha.ps1 -Path 'D:\instaladores\MiApp.msi' -Id miapp
 Pega el resultado en `apps` del `catalog.json` y prueba la instalación en un equipo limpio. El catálogo trae **Genesys Cloud** y **Krisp** (instaladores oficiales, con su SHA-256, `enabled: true`) y un ejemplo con 7-Zip.
 
 `enabled` solo gobierna el **despliegue desatendido** (`/silent /all` y el agente). En la pestaña Aplicaciones, lo que el técnico marca se instala aunque tenga `enabled: false`: la selección a mano manda.
+
+Además de lo que genera el script, cada ficha admite tres campos opcionales:
+
+| Campo | Para qué |
+|---|---|
+| `uninstallArgs` | Conmutadores de desinstalación silenciosa del fabricante, para *Desinstalar* cuando el registro no publica `QuietUninstallString`. En los MSI no hace falta: se usa `msiexec /x` con el `productCode` |
+| `detection.displayNames` | Lista de nombres alternativos, para fabricantes que renombran el producto entre versiones |
+| `verifyTimeoutSeconds` | Segundos que se espera tras instalar a que la aplicación aparezca en el registro (180 por defecto). Subirlo solo si un instalador concreto tarda más en registrarse |
 
 ---
 

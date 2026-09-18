@@ -579,15 +579,17 @@ namespace Toolkit.App
             };
 
             var apply   = NewButton("Instalar seleccionadas", Theme.ButtonKind.Success,   Theme.GlyphDownload);
+            var remove  = NewButton("Desinstalar",            Theme.ButtonKind.Danger,    Theme.GlyphDelete);
             var audit   = NewButton("Comprobar instaladas",   Theme.ButtonKind.Secondary, Theme.GlyphSearch);
             var refresh = NewButton("Recargar catálogo",      Theme.ButtonKind.Secondary, Theme.GlyphRefresh);
 
             refresh.Click += async (s, e) => await RefreshApps();
             audit.Click   += async (s, e) => await Execute("apps", reportOnly: true);
-            apply.Click   += async (s, e) =>
+            apply.Click   += async (s, e) => await InstallApps();
+            remove.Click  += async (s, e) =>
             {
-                var code = await Execute("apps", reportOnly: false);
-                if (code != ExitCancelled) await RefreshApps();   // refleja lo instalado
+                var code = await Execute("apps", reportOnly: false, uninstall: true);
+                if (code != ExitCancelled) await RefreshApps();
             };
 
             // Tres filas: texto (auto), lista (todo el resto), botones (auto).
@@ -600,10 +602,51 @@ namespace Toolkit.App
             grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             grid.Controls.Add(_appsHint, 0, 0);
             grid.Controls.Add(_apps, 0, 1);
-            grid.Controls.Add(NewButtonRow(apply, audit, refresh), 0, 2);
+            grid.Controls.Add(NewButtonRow(apply, remove, audit, refresh), 0, 2);
 
             page.Controls.Add(grid);
             return page;
+        }
+
+        /// <summary>
+        /// Instalar lo marcado. Si algo ya está instalado, el motor lo saltaría
+        /// ("ya instalado") y no habría forma de subir de versión: por eso aquí se
+        /// pregunta qué hacer con lo que ya está, que es lo que hace falta para
+        /// poner una versión más nueva.
+        /// </summary>
+        private async Task InstallApps()
+        {
+            var yaInstaladas = new List<string>();
+            foreach (ListViewItem item in _apps.CheckedItems)
+            {
+                var row = item.Tag as AppRow;
+                if (row != null && (row.Installed || row.Outdated)) yaInstaladas.Add(row.Name);
+            }
+
+            bool force = false;
+            if (yaInstaladas.Count > 0)
+            {
+                var choice = Dialogs.Choice(this, "Ya están instaladas",
+                    "Estas aplicaciones ya están en el equipo:\n\n  · " + string.Join("\n  · ", yaInstaladas) +
+                    "\n\nPara poner una versión más nueva hay que reinstalarlas. La mayoría de instaladores " +
+                    "actualizan encima sin problema; si el fabricante no lo permite, hay que quitarlas antes.",
+                    new[] { "Reinstalar encima", "Desinstalar y volver a instalar", "Cancelar" });
+
+                if (choice == 2) return;
+                force = true;
+
+                if (choice == 1)
+                {
+                    var codeUninstall = await Execute("apps", reportOnly: false, uninstall: true, keepLog: false);
+                    if (codeUninstall == ExitCancelled) return;
+                    await RefreshApps();
+                    // La desinstalación puede dejar restos hasta el reinicio; se sigue
+                    // igualmente y el instalador resuelve, pero el log ya avisó.
+                }
+            }
+
+            var code = await Execute("apps", reportOnly: false, forceReinstall: force, keepLog: force);
+            if (code != ExitCancelled) await RefreshApps();   // refleja lo instalado
         }
 
         private sealed class AppRow
@@ -1077,6 +1120,7 @@ namespace Toolkit.App
             var bTime    = SupportButton("Hora del sistema",          Theme.GlyphClock);
             var bEvents  = SupportButton("Errores recientes (24 h)",  Theme.GlyphError);
             var bProcs   = SupportButton("Procesos que más consumen", Theme.GlyphProcess);
+            var bAv      = SupportButton("Estado del antivirus",     Theme.GlyphShield);
             bInfo.Click   += async (s, e) => await RunSupport("Info del equipo",   "Get-SupportSummary | Out-Null");
             bAudio.Click  += async (s, e) => await RunSupport("Audio y micrófono", "Test-AudioSetup | Out-Null");
             bPrint.Click  += async (s, e) => await RunSupport("Impresoras",        "Get-PrinterReport | Out-Null");
@@ -1084,7 +1128,8 @@ namespace Toolkit.App
             bTime.Click   += async (s, e) => await RunSupport("Hora del sistema",  "Get-TimeStatus | Out-Null");
             bEvents.Click += async (s, e) => await RunSupport("Errores recientes", "Get-RecentErrors | Out-Null");
             bProcs.Click  += async (s, e) => await RunSupport("Procesos",          "Get-TopProcesses | Out-Null");
-            stack.Controls.Add(NewButtonRow(bInfo, bAudio, bPrint, bUpdate, bTime, bEvents, bProcs));
+            bAv.Click     += async (s, e) => await RunSupport("Estado del antivirus", "Get-AntivirusStatus | Out-Null");
+            stack.Controls.Add(NewButtonRow(bInfo, bAudio, bPrint, bUpdate, bTime, bEvents, bProcs, bAv));
 
             // --- Reparaciones rápidas ---
             stack.Controls.Add(Theme.SectionLabel("Reparaciones rápidas"));
@@ -1125,23 +1170,58 @@ namespace Toolkit.App
             bAbort.Click   += async (s, e) => await RunSupport("Cancelar reinicio", "Restart-ComputerDelayed -Cancel | Out-Null");
             stack.Controls.Add(NewButtonRow(bNet, bNetDeep, bAudioR, bQueue, bSync, bTemp, bMedia, bPower, bScan, bSfc, bReboot, bAbort));
 
-            // --- Reporte ---
-            stack.Controls.Add(Theme.SectionLabel("Reporte"));
-            var bReport = SupportButton("Guardar reporte para ticket", Theme.GlyphSave, Theme.ButtonKind.Primary);
-            bReport.Click += async (s, e) =>
-            {
-                var path = await RunSupport("Reporte para ticket",
-                    "param($Root) Export-SupportReport -Root $Root",
-                    parameters: new Dictionary<string, object> { { "Root", _args.Root } });
-                if (!string.IsNullOrEmpty(path) && System.IO.File.Exists(path))
-                {
-                    try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + path + "\""); } catch { }
-                }
-            };
+            // --- Antivirus ---
+            // Desactivarlo es para instalar software corporativo que el analizador
+            // bloquea, con el técnico delante. El módulo programa solo la
+            // reactivación, así que el equipo no se queda sin protección.
+            stack.Controls.Add(Theme.SectionLabel("Antivirus  ·  solo mientras instalas"));
+            var bAvOff = SupportButton("Desactivar 30 min", Theme.GlyphShield, Theme.ButtonKind.Danger);
+            var bAvOn  = SupportButton("Reactivar ahora",   Theme.GlyphShield, Theme.ButtonKind.Success);
+            bAvOff.Click += async (s, e) => await RunSupport("Desactivar antivirus",
+                "Set-DefenderRealtime -Disable -ReenableAfterMinutes 30 | Out-Null",
+                "Se desactivará la protección en tiempo real de Microsoft Defender durante 30 minutos.\n\n" +
+                "Mientras tanto este equipo NO está protegido: instala solo software del catálogo.\n\n" +
+                "Se reactivará sola a los 30 minutos y también si el equipo se reinicia antes.",
+                "Desactivar 30 min", danger: true);
+            bAvOn.Click  += async (s, e) => await RunSupport("Reactivar antivirus",
+                "Set-DefenderRealtime -Enable | Out-Null");
+            stack.Controls.Add(NewButtonRow(bAvOff, bAvOn));
+
+            // --- Informe ---
+            stack.Controls.Add(Theme.SectionLabel("Informe"));
+            var bReport = SupportButton("Informe para el ticket...", Theme.GlyphSave, Theme.ButtonKind.Primary);
+            bReport.Click += async (s, e) => await ExportReport();
             stack.Controls.Add(NewButtonRow(bReport));
 
             page.Controls.Add(stack);
             return page;
+        }
+
+        /// <summary>
+        /// Pide los datos de cabecera y genera el informe. Al terminar lo abre: el
+        /// técnico lo quiere para adjuntarlo al ticket, no para buscarlo en disco.
+        /// </summary>
+        private async Task ExportReport()
+        {
+            string ticket, tecnico, notas, formato;
+            using (var dlg = new ReportDialog())
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+                ticket = dlg.Ticket; tecnico = dlg.Tecnico; notas = dlg.Notas; formato = dlg.Formato;
+            }
+
+            var path = await RunSupport("Informe para el ticket",
+                "param($Root, $Formato, $Ticket, $Tecnico, $Notas) " +
+                "Export-SupportReport -Root $Root -Format $Formato -Ticket $Ticket -Tecnico $Tecnico -Notas $Notas",
+                parameters: new Dictionary<string, object>
+                {
+                    { "Root", _args.Root }, { "Formato", formato },
+                    { "Ticket", ticket }, { "Tecnico", tecnico }, { "Notas", notas }
+                });
+
+            if (string.IsNullOrEmpty(path) || !System.IO.File.Exists(path)) return;
+            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true }); } catch { }
+            try { System.Diagnostics.Process.Start("explorer.exe", "/select,\"" + path + "\""); } catch { }
         }
 
         private Button SupportButton(string text, string glyph, Theme.ButtonKind kind = Theme.ButtonKind.Secondary)
@@ -1555,22 +1635,25 @@ namespace Toolkit.App
         /// Ejecuta UN módulo del orquestador con las opciones de su página.
         /// Devuelve el código de salida (o ExitCancelled si el usuario no confirmó).
         /// </summary>
-        private async Task<int> Execute(string module, bool reportOnly, bool checkIn = false, bool keepLog = false)
+        private async Task<int> Execute(string module, bool reportOnly, bool checkIn = false, bool keepLog = false,
+                                        bool forceReinstall = false, bool uninstall = false)
         {
             string[] apps = null;
             if (module == "apps")
             {
                 apps = SelectedApps();
-                // Comprobar sin nada marcado = comprobar todas; instalar sí exige marcar.
+                // Comprobar sin nada marcado = comprobar todas; instalar y desinstalar sí exigen marcar.
                 if (apps.Length == 0 && reportOnly) apps = AllApps();
                 if (apps.Length == 0)
                 {
-                    Dialogs.Info(this, "Aplicaciones", "Marca las aplicaciones que quieras instalar.");
+                    Dialogs.Info(this, "Aplicaciones",
+                        uninstall ? "Marca las aplicaciones que quieras desinstalar." : "Marca las aplicaciones que quieras instalar.");
                     return ExitCancelled;
                 }
                 // Fichas sin instalador (url y share vacíos): mejor avisar aquí que
-                // fallar en el orquestador con "sin origen válido".
-                if (!reportOnly)
+                // fallar en el orquestador con "sin origen válido". Al desinstalar no
+                // importa: el comando sale del registro del equipo, no del catálogo.
+                if (!reportOnly && !uninstall)
                 {
                     var pending = new List<string>();
                     foreach (ListViewItem item in _apps.CheckedItems)
@@ -1602,9 +1685,22 @@ namespace Toolkit.App
                                "\n\nLos cambios de registro quedan registrados y son reversibles con 'Revertir'.";
                         break;
                     case "apps":
-                        title = "Instalar aplicaciones"; ok = "Instalar";
-                        what = "Se van a instalar en silencio:\n\n  · " + string.Join("\n  · ", apps) +
-                               "\n\nLa instalación de aplicaciones NO se deshace con 'Revertir'.";
+                        if (uninstall)
+                        {
+                            title = "Desinstalar aplicaciones"; ok = "Desinstalar";
+                            what = "Se van a quitar de este equipo:\n\n  · " + string.Join("\n  · ", apps) +
+                                   "\n\nSe usa la desinstalación silenciosa del fabricante. Si alguna no la tiene, " +
+                                   "se abrirá su desinstalador para completarlo en pantalla.\n\n" +
+                                   "Esto NO se deshace con 'Revertir'.";
+                        }
+                        else
+                        {
+                            title = "Instalar aplicaciones"; ok = forceReinstall ? "Reinstalar" : "Instalar";
+                            what = (forceReinstall ? "Se van a (re)instalar en silencio:\n\n  · " : "Se van a instalar en silencio:\n\n  · ") +
+                                   string.Join("\n  · ", apps) +
+                                   (forceReinstall ? "\n\nLas que ya estén se instalarán encima para subir de versión." : "") +
+                                   "\n\nLa instalación de aplicaciones NO se deshace con 'Revertir'.";
+                        }
                         break;
                     default:
                         title = "Confirmar"; ok = "Continuar";
@@ -1616,8 +1712,15 @@ namespace Toolkit.App
 
             // Las opciones se leen aquí, en el hilo de la UI, antes de irse al hilo de trabajo.
             var options = BuildRunOptions(module, reportOnly, checkIn, apps);
+            options.ForceReinstall = forceReinstall;
+            options.UninstallApps  = uninstall;
+            // El técnico está delante: si algo no tiene desinstalación silenciosa,
+            // mejor abrir su desinstalador que rendirse.
+            options.AllowInteractive = uninstall;
 
-            SetBusy(true, checkIn ? "Comprobando el check-in de Zoho..." : reportOnly ? "Auditando..." : "Aplicando cambios...");
+            SetBusy(true, checkIn ? "Comprobando el check-in de Zoho..."
+                        : uninstall ? "Desinstalando..."
+                        : reportOnly ? "Auditando..." : "Aplicando cambios...");
             if (!keepLog) _log.Clear();
 
             var exitCode = await RunModule(options);
@@ -1704,7 +1807,7 @@ namespace Toolkit.App
             _stTime     = Theme.Check("Sincronizar la hora con NTP", true);
             _stApps     = Theme.Check("Instalar las aplicaciones del catálogo marcadas como enabled=true que falten", true);
             _stCheckIn  = Theme.Check("Comprobar el check-in de Zoho al terminar", true);
-            _stReport   = Theme.Check("Guardar el reporte para el ticket y abrir la carpeta", true);
+            _stReport   = Theme.Check("Generar el informe PDF del equipo y abrir la carpeta", true);
             foreach (var c in new[] { _stLocation, _stMedia, _stPower, _stTime, _stApps, _stCheckIn, _stReport }) stack.Controls.Add(c);
 
             var run = NewButton("Preparar este equipo", Theme.ButtonKind.Success, Theme.GlyphPlay);
@@ -1737,7 +1840,7 @@ namespace Toolkit.App
             }
 
             var what = "Se va a preparar este equipo. Pasos:\n\n  · " +
-                       string.Join("\n  · ", steps.ConvertAll(x => x.Name)) + (_stReport.Checked ? "\n  · Reporte para el ticket" : "") +
+                       string.Join("\n  · ", steps.ConvertAll(x => x.Name)) + (_stReport.Checked ? "\n  · Informe del equipo (PDF)" : "") +
                        "\n\nLos cambios de registro son reversibles con 'Revertir'; las aplicaciones instaladas no.";
             if (!Dialogs.Confirm(this, "Alta de puesto", what, "Preparar equipo")) return;
 
@@ -1761,10 +1864,11 @@ namespace Toolkit.App
             string reportPath = null;
             if (_stReport.Checked && !cancelled)
             {
-                SetBusy(true, "Alta de puesto: guardando el reporte...");
-                reportPath = await RunSupportValue("param($Root) Export-SupportReport -Root $Root",
-                    new Dictionary<string, object> { { "Root", _args.Root } });
-                results.Add(reportPath != null ? "✓ Reporte: " + reportPath : "✗ Reporte: no se pudo guardar");
+                SetBusy(true, "Alta de puesto: generando el informe...");
+                reportPath = await RunSupportValue(
+                    "param($Root, $Tecnico) Export-SupportReport -Root $Root -Tecnico $Tecnico -Notas 'Alta de puesto'",
+                    new Dictionary<string, object> { { "Root", _args.Root }, { "Tecnico", Environment.UserName } });
+                results.Add(reportPath != null ? "✓ Informe: " + reportPath : "✗ Informe: no se pudo guardar");
             }
 
             var summary = string.Join("\n", results);

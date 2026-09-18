@@ -2,6 +2,8 @@
   "schemaVersion": 1,
   "_comment": "Catalogo del toolkit. TODO lo marcado VERIFICAR debe validarse a mano en laboratorio antes de poner enabled=true.",
 
+  "_campos_opcionales_comment": "Ademas de los campos de siempre, cada ficha admite: uninstallArgs = conmutadores de desinstalacion silenciosa del fabricante, para 'Desinstalar' cuando el registro no publica QuietUninstallString (en MSI no hace falta: se usa msiexec /x con el productCode). detection.displayNames = lista de nombres alternativos, para fabricantes que renombran el producto entre versiones. verifyTimeoutSeconds = segundos que el toolkit espera tras instalar a que la aplicacion aparezca en el registro (por defecto 180; subirlo solo si un instalador tarda mas en registrarse).",
+
   "_shares_comment": "Opcionales. packageRepo = share UNC con los instaladores (vacio = se descargan de la url de cada ficha). reportShare = share donde subir reportes (vacio = solo en local, C:\\ProgramData\\Toolkit\\reports). Ejemplo: \\\\SRV-FILE\\Toolkit$\\packages y \\\\SRV-FILE\\Toolkit$. No dejes un servidor que no exista: cada ejecucion lo intentaria.",
   "packageRepo": "",
   "reportShare": "",

@@ -160,6 +160,9 @@ namespace Toolkit.App
 
                 if (options.Apps != null && options.Apps.Length > 0) ps.AddParameter("Apps", options.Apps);
                 if (!string.IsNullOrWhiteSpace(options.SharePath))   ps.AddParameter("SharePath", options.SharePath);
+                if (options.ForceReinstall)          ps.AddParameter("ForceReinstall", true);
+                if (options.UninstallApps)           ps.AddParameter("UninstallApps", true);
+                if (options.AllowInteractive)        ps.AddParameter("AllowInteractive", true);
                 if (options.ReportOnly)              ps.AddParameter("ReportOnly", true);
                 if (options.Silent)                  ps.AddParameter("Silent", true);
                 if (options.NoLockDown)              ps.AddParameter("NoLockDown", true);
@@ -308,6 +311,12 @@ namespace Toolkit.App
         public string Root { get; set; } = @"C:\ProgramData\Toolkit";
         public bool ReportOnly { get; set; }
         public bool Silent { get; set; }
+        /// <summary>Reinstalar aunque la aplicacion ya este puesta (subir de version).</summary>
+        public bool ForceReinstall { get; set; }
+        /// <summary>Desinstalar las aplicaciones de <see cref="Apps"/> en vez de instalarlas.</summary>
+        public bool UninstallApps { get; set; }
+        /// <summary>Permitir abrir el desinstalador del fabricante cuando no tiene modo silencioso.</summary>
+        public bool AllowInteractive { get; set; }
         public bool NoLockDown { get; set; }
         /// <summary>No tocar las politicas de geolocalizacion de Chrome/Edge/Firefox.</summary>
         public bool NoBrowsers { get; set; }

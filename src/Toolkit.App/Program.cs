@@ -87,7 +87,9 @@ namespace Toolkit.App
             { "time",     "Get-TimeStatus | Out-Null" },
             { "events",   "Get-RecentErrors | Out-Null" },
             { "procs",    "Get-TopProcesses | Out-Null" },
-            { "report",   "param($Root) Export-SupportReport -Root $Root | Out-Null" }
+            { "antivirus","Get-AntivirusStatus | Out-Null" },
+            { "report",   "param($Root) Export-SupportReport -Root $Root | Out-Null" },
+            { "report-txt", "param($Root) Export-SupportReport -Root $Root -Format Texto | Out-Null" }
         };
 
         private static int RunSupport(CommandLineArgs args)
@@ -151,6 +153,8 @@ namespace Toolkit.App
                     NoLockDown              = args.NoLockDown,
                     NoBrowsers              = args.NoBrowsers,
                     CheckIn                 = args.CheckIn,
+                    ForceReinstall          = args.Reinstall,
+                    UninstallApps           = args.UninstallApps,
                     IgnoreMaintenanceWindow = args.Force
                 };
 

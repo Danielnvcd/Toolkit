@@ -90,7 +90,7 @@ if ($Rollback) {
 #  Invocacion del orquestador compartido
 # ---------------------------------------------------------------------------
 function Invoke-Run {
-    param([string[]]$Mods, [switch]$AsReport, [switch]$AsCheckIn)
+    param([string[]]$Mods, [switch]$AsReport, [switch]$AsCheckIn, [switch]$AsReinstall, [switch]$AsUninstall, [string[]]$OnlyApps)
 
     $splat = @{
         Modules    = $Mods
@@ -102,7 +102,10 @@ function Invoke-Run {
         NoBrowsers = $NoBrowsers
         CheckIn    = $AsCheckIn
     }
-    if ($Apps)      { $splat.Apps = $Apps }
+    if ($AsReinstall) { $splat.ForceReinstall = $true }
+    if ($AsUninstall) { $splat.UninstallApps = $true; $splat.AllowInteractive = $true }
+    if ($OnlyApps)  { $splat.Apps = $OnlyApps }
+    elseif ($Apps)  { $splat.Apps = $Apps }
     if ($SharePath) { $splat.SharePath = $SharePath }
 
     return & $runner @splat
@@ -111,6 +114,20 @@ function Invoke-Run {
 # ---------------------------------------------------------------------------
 #  Menu interactivo
 # ---------------------------------------------------------------------------
+function Read-AppIds {
+    <# Pide al tecnico los ids del catalogo sobre los que actuar. #>
+    param([Parameter(Mandatory)]$Catalog, [Parameter(Mandatory)][string]$Accion)
+
+    Write-Host ''
+    Write-Host ("   Aplicaciones del catalogo:") -ForegroundColor Gray
+    foreach ($a in $Catalog.apps) { Write-Host ('     {0,-16} {1}' -f $a.id, $a.name) -ForegroundColor DarkGray }
+    Write-Host ''
+    $raw = Read-Host ("   Ids a $Accion (separados por coma, vacio = cancelar)")
+    $ids = @($raw -split '[,; ]+' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($ids.Count -eq 0) { Write-Host '   Cancelado.' -ForegroundColor DarkGray; return @() }
+    return $ids
+}
+
 function Show-Menu {
     $config = Get-ToolkitConfig -Path $ConfigPath
 
@@ -135,6 +152,8 @@ function Show-Menu {
         Write-Host '   --- APLICAR CAMBIOS ---' -ForegroundColor Gray
         Write-Host '    5) Activar ubicacion (servicio + politicas + todos los perfiles)'
         Write-Host '    6) Instalar aplicaciones del catalogo'
+        Write-Host '    R) Reinstalar aplicaciones (encima, para subir de version)'
+        Write-Host '    D) Desinstalar aplicaciones'
         Write-Host '    7) EJECUTAR TODO'
         Write-Host ''
         Write-Host '   --- USUARIOS LOCALES ---' -ForegroundColor Gray
@@ -156,6 +175,16 @@ function Show-Menu {
             '4' { Invoke-Run -Mods @('location','apps','network','users') -AsReport | Out-Null; Wait-Key }
             '5' { Invoke-Run -Mods @('location')                   | Out-Null; Wait-Key }
             '6' { Invoke-Run -Mods @('apps')                       | Out-Null; Wait-Key }
+            'R' {
+                $ids = Read-AppIds -Catalog $config -Accion 'reinstalar'
+                if ($ids) { Invoke-Run -Mods @('apps') -AsReinstall -OnlyApps $ids | Out-Null }
+                Wait-Key
+            }
+            'D' {
+                $ids = Read-AppIds -Catalog $config -Accion 'desinstalar'
+                if ($ids) { Invoke-Run -Mods @('apps') -AsUninstall -OnlyApps $ids | Out-Null }
+                Wait-Key
+            }
             '7' { Invoke-Run -Mods @('location','apps','network')  | Out-Null; Wait-Key }
             '8' {
                 Write-Host ''
@@ -274,7 +303,11 @@ function Show-SupportMenu {
         Write-Host '    H) No suspender el equipo I) Buscar actualizaciones'
         Write-Host '    J) Reparar archivos del sistema (sfc, 5-20 min)'
         Write-Host ''
-        Write-Host '    R) Guardar reporte para ticket'
+        Write-Host '    6) Estado del antivirus'
+        Write-Host '    K) Desactivar antivirus 30 min (se reactiva solo)'
+        Write-Host '    L) Reactivar antivirus ahora'
+        Write-Host ''
+        Write-Host '    R) Informe PDF para el ticket        T) Informe en texto plano'
         Write-Host '    0) Volver'
         Write-Host ''
         switch ((Read-Host '   Opcion').Trim().ToUpper()) {
@@ -293,7 +326,17 @@ function Show-SupportMenu {
             'H' { Set-NoSleepPower | Out-Null; Wait-Key }
             'I' { Start-UpdateScan | Out-Null; Wait-Key }
             'J' { Repair-SystemFiles | Out-Null; Wait-Key }
-            'R' { $p = Export-SupportReport -Root $Root; Start-Process explorer.exe "/select,`"$p`""; Wait-Key }
+            '6' { Get-AntivirusStatus | Out-Null; Wait-Key }
+            'K' {
+                Write-Host ''
+                Write-Host '   El equipo quedara SIN proteccion durante 30 minutos (se reactiva solo).' -ForegroundColor Yellow
+                if ((Read-Host '   Escribe SI para confirmar') -eq 'SI') { Set-DefenderRealtime -Disable -ReenableAfterMinutes 30 | Out-Null }
+                else { Write-Host '   Cancelado.' -ForegroundColor DarkGray }
+                Wait-Key
+            }
+            'L' { Set-DefenderRealtime -Enable | Out-Null; Wait-Key }
+            'R' { $p = Export-SupportReport -Root $Root -Tecnico $env:USERNAME; Start-Process explorer.exe "/select,`"$p`""; Wait-Key }
+            'T' { $p = Export-SupportReport -Root $Root -Format Texto; Start-Process explorer.exe "/select,`"$p`""; Wait-Key }
             '0' { return }
         }
     }
