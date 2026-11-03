@@ -136,7 +136,7 @@ namespace Toolkit.App
         public static void PrintUsage()
         {
             Console.WriteLine(@"
-TOOLKIT BPO  v" + Program.AppVersion() + @"   |   creado por " + Program.AppAuthor + @"
+TOOLKIT  v" + Program.AppVersion() + @"   |   creado por " + Program.AppAuthor + @"
 Un solo ejecutable. Los scripts van dentro.
 Actualizaciones y guia de uso: " + Program.UpdatesUrl + @"
 

@@ -1,4 +1,4 @@
-# Toolkit BPO — plan de mejora
+# Toolkit — plan de mejora
 
 Estado de partida (16-09-2026): compila, se firma, y todo lo de solo lectura está probado en un equipo real. Lo que cambia el sistema (activar ubicación, instalar apps, reparaciones, agente) está escrito pero **sin pasar por máquina de pruebas**. Ese es el primer bloque del plan, porque sin él lo demás son suposiciones.
 

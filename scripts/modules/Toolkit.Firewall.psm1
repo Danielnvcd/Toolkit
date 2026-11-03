@@ -8,7 +8,7 @@
                       automatica por tarea programada (Suspend-Firewall).
       2. Programas  : cortar la red a un .exe con una regla de bloqueo del propio
                       firewall de Windows (Block-ProgramNetwork). Todas las reglas
-                      del toolkit van en el grupo 'Toolkit BPO' para listarlas y
+                      del toolkit van en el grupo 'Toolkit' para listarlas y
                       quitarlas sin tocar las demas.
       3. Filtro web : bloquear categorias de sitios (redes sociales, video,
                       mensajeria, juegos, apuestas, adulto) en TRES capas:
@@ -33,9 +33,11 @@ if (-not (Get-Command 'Write-Log' -ErrorAction SilentlyContinue)) {
     Import-Module (Join-Path $PSScriptRoot 'Toolkit.Core.psm1') -Force -DisableNameChecking -Global
 }
 
-$script:RuleGroup        = 'Toolkit BPO'
+$script:RuleGroup        = 'Toolkit'
+# Grupo con el nombre anterior de la app: sus reglas se siguen listando y quitando.
+$script:RuleGroups       = @('Toolkit', 'Toolkit BPO')
 $script:RulePrefix       = 'Toolkit: '
-$script:PauseTaskPath    = '\Toolkit BPO\'
+$script:PauseTaskPath    = '\Toolkit\'
 $script:PauseTaskName    = 'Reactivar firewall'
 $script:RegState         = 'HKLM:\SOFTWARE\Toolkit\Firewall'
 $script:RegWebState      = 'HKLM:\SOFTWARE\Toolkit\WebFilter'
@@ -43,8 +45,11 @@ $script:RegChromeBlock   = 'HKLM:\SOFTWARE\Policies\Google\Chrome\URLBlocklist'
 $script:RegEdgeBlock     = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\URLBlocklist'
 $script:RegFirefoxBlock  = 'HKLM:\SOFTWARE\Policies\Mozilla\Firefox\WebsiteFilter\Block'
 $script:HostsPath        = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-$script:HostsBegin       = '# >>> Toolkit BPO - filtro web (no editar este bloque) >>>'
-$script:HostsEnd         = '# <<< Toolkit BPO - filtro web <<<'
+$script:HostsBegin       = '# >>> Toolkit - filtro web (no editar este bloque) >>>'
+$script:HostsEnd         = '# <<< Toolkit - filtro web <<<'
+# Marcas del bloque escritas con el nombre anterior de la app.
+$script:HostsBeginOld    = '# >>> Toolkit BPO - filtro web (no editar este bloque) >>>'
+$script:HostsEndOld      = '# <<< Toolkit BPO - filtro web <<<'
 # Dominios que NUNCA van al archivo hosts: Microsoft Defender detecta cualquier entrada de hosts
 # para dominios de Microsoft como SettingsModifier:Win32/HostsFileHijack y la elimina (y avisa).
 # En la politica del navegador si se pueden bloquear.
@@ -135,7 +140,7 @@ function Get-FirewallState {
     if ($pause) { $state.Paused = $true; $state.PauseEndsAt = $pause.EndsAt }
     if ($state.AnyDisabled -and -not $state.Paused) { $state.Issues += 'Hay perfiles con el firewall DESACTIVADO y no es una pausa del toolkit' }
 
-    try { $state.ToolkitRules = @(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction Stop).Count } catch { }
+    try { $state.ToolkitRules = @(Get-NetFirewallRule -Group $script:RuleGroups -ErrorAction SilentlyContinue).Count } catch { }
 
     return [pscustomobject]$state
 }
@@ -306,7 +311,7 @@ function Find-BlockingRule {
             Direction   = "$($rule.Direction)"
             Program     = $(if ($app) { "$($app.Program)" } else { 'Any' })
             Match       = ($why -join ', ')
-            Toolkit     = ($rule.Group -eq $script:RuleGroup)
+            Toolkit     = ($script:RuleGroups -contains $rule.Group)
         }
     }
     return $out
@@ -445,13 +450,13 @@ function Resume-Firewall {
 #region ---------- Bloque 2: bloquear programas ----------
 
 function Get-ToolkitBlockRules {
-    <# Reglas creadas por el toolkit (grupo 'Toolkit BPO'), con programa y direccion. Solo lectura. #>
+    <# Reglas creadas por el toolkit (grupo 'Toolkit'), con programa y direccion. Solo lectura. #>
     [CmdletBinding()]
     param()
 
     $out = @()
     $rules = @()
-    try { $rules = @(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction Stop) } catch { return $out }
+    try { $rules = @(Get-NetFirewallRule -Group $script:RuleGroups -ErrorAction SilentlyContinue) } catch { return $out }
     foreach ($r in $rules) {
         $prog = 'Any'; $port = 'Any'; $addr = 'Any'
         try { $prog = "$(($r | Get-NetFirewallApplicationFilter -ErrorAction Stop).Program)" } catch { }
@@ -508,7 +513,7 @@ function Block-ProgramNetwork {
     $created = 0
     foreach ($d in $dirs) {
         $display = '{0}{1} ({2})' -f $script:RulePrefix, $leaf, $(if ($d -eq 'Outbound') { 'salida' } else { 'entrada' })
-        $exists = @(Get-NetFirewallRule -Group $script:RuleGroup -Direction $d -ErrorAction SilentlyContinue |
+        $exists = @(Get-NetFirewallRule -Group $script:RuleGroups -Direction $d -ErrorAction SilentlyContinue |
                     Where-Object { $prog = $null; try { $prog = ($_ | Get-NetFirewallApplicationFilter).Program } catch { }; $prog -and ($prog -ieq $Path) })
         if ($exists.Count -gt 0) {
             if (-not $exists[0].Enabled) { $exists[0] | Enable-NetFirewallRule; Write-Log "  + Regla '$display' reactivada" -Level OK; $created++ }
@@ -517,7 +522,7 @@ function Block-ProgramNetwork {
         }
         try {
             New-NetFirewallRule -DisplayName $display -Group $script:RuleGroup -Direction $d -Action Block -Program $Path `
-                                -Profile Any -Enabled True -Description 'Creada por Toolkit BPO. Quitar desde el toolkit o con Remove-NetFirewallRule.' -ErrorAction Stop | Out-Null
+                                -Profile Any -Enabled True -Description 'Creada por Toolkit. Quitar desde el toolkit o con Remove-NetFirewallRule.' -ErrorAction Stop | Out-Null
             Write-Log "  + Regla '$display' creada" -Level OK
             $created++
         } catch {
@@ -538,7 +543,7 @@ function Unblock-ProgramNetwork {
     if (Test-ReportOnly) { Write-Log '  ! MODO REPORTE: sin cambios' -Level WARN; return $false }
     $targets = @()
     if ($Name) {
-        $targets = @(Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue | Where-Object { $_.Group -eq $script:RuleGroup })
+        $targets = @(Get-NetFirewallRule -Name $Name -ErrorAction SilentlyContinue | Where-Object { $script:RuleGroups -contains $_.Group })
     } elseif ($Path) {
         $Path = [Environment]::ExpandEnvironmentVariables($Path.Trim('"'))
         $targets = @(Get-ToolkitBlockRules | Where-Object { $_.Program -ieq $Path } | ForEach-Object { Get-NetFirewallRule -Name $_.Name })
@@ -557,7 +562,7 @@ function Remove-AllToolkitBlockRules {
     [CmdletBinding()]
     param()
     if (Test-ReportOnly) { Write-Log '  ! MODO REPORTE: sin cambios' -Level WARN; return 0 }
-    $rules = @(Get-NetFirewallRule -Group $script:RuleGroup -ErrorAction SilentlyContinue)
+    $rules = @(Get-NetFirewallRule -Group $script:RuleGroups -ErrorAction SilentlyContinue)
     Write-Log ("QUITAR TODAS LAS REGLAS DEL TOOLKIT ({0})" -f $rules.Count) -Level STEP
     foreach ($r in $rules) { try { $r | Remove-NetFirewallRule -ErrorAction Stop; Write-Log "  + '$($r.DisplayName)' eliminada" -Level OK } catch { Write-Log "  x $($r.DisplayName): $($_.Exception.Message)" -Level ERROR } }
     if ($rules.Count) { Add-Result -Module 'Firewall' -Task 'Quitar reglas' -Status 'CAMBIADO' -Message "$($rules.Count) regla(s)" }
@@ -792,8 +797,8 @@ function Get-HostsEntries {
     if (-not (Test-Path -LiteralPath $script:HostsPath)) { return $out }
     $inBlock = $false
     foreach ($line in (Get-Content -LiteralPath $script:HostsPath -ErrorAction SilentlyContinue)) {
-        if ($line -eq $script:HostsBegin) { $inBlock = $true; continue }
-        if ($line -eq $script:HostsEnd)   { $inBlock = $false; continue }
+        if ($line -eq $script:HostsBegin -or $line -eq $script:HostsBeginOld) { $inBlock = $true; continue }
+        if ($line -eq $script:HostsEnd -or $line -eq $script:HostsEndOld)     { $inBlock = $false; continue }
         $t = ($line -replace '#.*$', '').Trim()
         if (-not $t) { continue }
         $parts = $t -split '\s+'
@@ -814,8 +819,8 @@ function Set-HostsBlock {
     $kept = New-Object System.Collections.Generic.List[string]
     $inBlock = $false
     foreach ($l in $lines) {
-        if ($l -eq $script:HostsBegin) { $inBlock = $true; continue }
-        if ($l -eq $script:HostsEnd)   { $inBlock = $false; continue }
+        if ($l -eq $script:HostsBegin -or $l -eq $script:HostsBeginOld) { $inBlock = $true; continue }
+        if ($l -eq $script:HostsEnd -or $l -eq $script:HostsEndOld)     { $inBlock = $false; continue }
         if (-not $inBlock) { $kept.Add($l) }
     }
     while ($kept.Count -gt 0 -and -not $kept[$kept.Count - 1].Trim()) { $kept.RemoveAt($kept.Count - 1) }
@@ -832,7 +837,7 @@ function Set-HostsBlock {
         $block += $script:HostsEnd
     }
     $final = @($kept) + $block
-    $hadBlock = ($lines -contains $script:HostsBegin)
+    $hadBlock = (($lines -contains $script:HostsBegin) -or ($lines -contains $script:HostsBeginOld))
     if (-not $hadBlock -and $Domains.Count -eq 0) { return 0 }
 
     try {

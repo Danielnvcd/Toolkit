@@ -161,25 +161,11 @@ namespace Toolkit.App
         }
 
         // -------------------------------------------------------------------
-        //  Cabecera: logo de la empresa, equipo/usuario y "Acerca de"
+        //  Cabecera: equipo/usuario y "Acerca de"
         // -------------------------------------------------------------------
         private Control BuildHeader()
         {
-            // Fondo blanco porque el logo (texto negro sobre transparente) está hecho para eso.
             var header = new Panel { Dock = DockStyle.Top, Height = 58, BackColor = Theme.Surface };
-            var logo = new PictureBox
-            {
-                Dock = DockStyle.Left, SizeMode = PictureBoxSizeMode.Zoom,
-                Margin = new Padding(0), Padding = new Padding(16, 8, 0, 8), Cursor = Cursors.Hand
-            };
-            var img = EmbeddedScripts.CompanyLogo;
-            if (img != null)
-            {
-                logo.Image = img;
-                logo.Width = (int)Math.Round(img.Width * (header.Height - 16) / (double)img.Height) + logo.Padding.Horizontal;
-            }
-            else logo.Width = 0;
-            logo.Click += (s, e) => ShowAbout();
 
             var about = Theme.MakeButton("Acerca de", Theme.ButtonKind.Secondary, Theme.GlyphInfo);
             about.FlatAppearance.BorderSize = 0;
@@ -198,7 +184,7 @@ namespace Toolkit.App
                 Padding = new Padding(8, 0, 12, 0),
                 Font = Theme.Body, ForeColor = Theme.TextMuted
             };
-            header.Controls.AddRange(new Control[] { machine, about, logo, Theme.Rule(DockStyle.Bottom) });
+            header.Controls.AddRange(new Control[] { machine, about, Theme.Rule(DockStyle.Bottom) });
             return header;
         }
 
@@ -813,7 +799,7 @@ namespace Toolkit.App
         //  Página Firewall y bloqueos: tres bloques que llaman a
         //  Toolkit.Firewall.psm1 en el runspace compartido.
         //    1. Firewall de Windows: estado, "¿es el firewall?" y pausa de 5 min.
-        //    2. Programas sin red: reglas de bloqueo del grupo 'Toolkit BPO'.
+        //    2. Programas sin red: reglas de bloqueo del grupo 'Toolkit'.
         //    3. Filtro web por categorías (Chrome/Edge/Firefox por política + hosts).
         // -------------------------------------------------------------------
         private Panel BuildFirewallPage()
@@ -2096,7 +2082,7 @@ namespace Toolkit.App
     /// </summary>
     internal static class WindowPlacement
     {
-        private const string Key = @"Software\Toolkit BPO\Window";
+        private const string Key = @"Software\Toolkit\Window";
         public static bool HasSavedSplitter { get; private set; }
 
         public static void Restore(Form f, SplitContainer split)

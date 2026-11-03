@@ -345,7 +345,7 @@ function Restart-ComputerDelayed {
         puede guardar. Se cancela con -Cancel (shutdown /a) mientras no haya vencido.
     #>
     [CmdletBinding()]
-    param([int]$Seconds = 60, [string]$Message = 'Toolkit BPO: el equipo se reiniciara por mantenimiento. Guarda tu trabajo.', [switch]$Cancel)
+    param([int]$Seconds = 60, [string]$Message = 'Toolkit: el equipo se reiniciara por mantenimiento. Guarda tu trabajo.', [switch]$Cancel)
 
     if ($Cancel) {
         & shutdown.exe /a 2>&1 | Out-Null
@@ -827,7 +827,7 @@ function Register-DefenderReenableTask {
         $settings  = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
         $null = Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $triggers `
                     -Principal $principal -Settings $settings -Force -ErrorAction Stop `
-                    -Description 'Toolkit BPO: vuelve a activar la proteccion en tiempo real de Defender.'
+                    -Description 'Toolkit: vuelve a activar la proteccion en tiempo real de Defender.'
         return $true
     } catch {
         Write-Log "  ! No se pudo programar la reactivacion: $($_.Exception.Message)" -Level WARN
@@ -1056,7 +1056,7 @@ function ConvertTo-SupportReportHtml {
 '@
 
     & $w '<header class="doc">'
-    & $w '<div class="org">Toolkit BPO &middot; Soporte t&eacute;cnico</div>'
+    & $w '<div class="org">Toolkit &middot; Soporte t&eacute;cnico</div>'
     & $w '<h1>Informe de soporte t&eacute;cnico</h1>'
     & $w ("<div class=""sub"">Equipo <strong>{0}</strong> &middot; generado el {1}</div>" -f (& $e $eq.Equipo), (& $e $now.ToString('dd/MM/yyyy HH:mm')))
     & $w '</header>'
@@ -1185,7 +1185,7 @@ function ConvertTo-SupportReportHtml {
     & $w ("<pre class=""raw"">{0}</pre>" -f (& $e ("$($Data.IpConfig)".Trim())))
     & $w '</section>'
 
-    & $w ("<footer class=""doc"">Documento generado autom&aacute;ticamente por Toolkit BPO {0} el {1} en el equipo {2}.<br>Registro completo de la ejecuci&oacute;n: {3}</footer>" -f
+    & $w ("<footer class=""doc"">Documento generado autom&aacute;ticamente por Toolkit {0} el {1} en el equipo {2}.<br>Registro completo de la ejecuci&oacute;n: {3}</footer>" -f
           (& $e (Get-ToolkitVersion)), (& $e $now.ToString('dd/MM/yyyy HH:mm:ss')), (& $e $eq.Equipo), (& $e (Get-ToolkitLogPath)))
     & $w '</body></html>'
 
@@ -1299,7 +1299,7 @@ function Export-SupportReport {
             [void]$sb.AppendLine(('=' * 78)); [void]$sb.AppendLine("  $title"); [void]$sb.AppendLine(('=' * 78))
             [void]$sb.AppendLine((($obj | Format-List * | Out-String -Width 120).Trim())); [void]$sb.AppendLine()
         }
-        [void]$sb.AppendLine("TOOLKIT BPO - INFORME DE SOPORTE   $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
+        [void]$sb.AppendLine("TOOLKIT - INFORME DE SOPORTE   $(Get-Date -Format 'yyyy-MM-dd HH:mm')")
         [void]$sb.AppendLine()
         & $add 'EQUIPO'          $data.Equipo
         & $add 'ANTIVIRUS'       ($data.Antivirus | Select-Object @{n='Productos';e={(@($_.Productos).Nombre) -join ', '}}, TiempoRealActivo, DefenderModo, TamperProtection)

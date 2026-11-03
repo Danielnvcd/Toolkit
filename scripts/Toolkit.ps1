@@ -136,7 +136,7 @@ function Show-Menu {
         $mi = Get-MachineInfo
         Write-Host ''
         Write-Host '  ############################################################' -ForegroundColor Cyan
-        Write-Host ('  #  TOOLKIT BPO  v{0,-41}#' -f (Get-ToolkitVersion))  -ForegroundColor Cyan
+        Write-Host ('  #  TOOLKIT  v{0,-41}#' -f (Get-ToolkitVersion))  -ForegroundColor Cyan
         Write-Host '  #  (modo scripts - en produccion se usa Toolkit.exe)       #' -ForegroundColor DarkCyan
         Write-Host '  ############################################################' -ForegroundColor Cyan
         Write-Host ('   Equipo : {0}   ({1} {2})' -f $mi.ComputerName, $mi.OSCaption, $mi.DisplayVersion) -ForegroundColor DarkGray

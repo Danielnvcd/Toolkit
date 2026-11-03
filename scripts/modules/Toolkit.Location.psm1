@@ -867,7 +867,7 @@ function Open-BrowserGeoTest {
 
     $path = Join-Path $Root 'geo-test.html'
     $html = @"
-<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Toolkit BPO - prueba de ubicacion</title>
+<!doctype html><html lang="es"><head><meta charset="utf-8"><title>Toolkit - prueba de ubicacion</title>
 <style>body{font-family:Segoe UI,Arial;margin:40px;max-width:720px;color:#222}h1{font-size:20px}#out{padding:16px;border-radius:8px;background:#f3f3f3;white-space:pre-wrap;font-family:Consolas,monospace}
 .ok{background:#e3f6e8;border:1px solid #2e8b57}.bad{background:#fdecea;border:1px solid #c0392b}.warn{background:#fff6e0;border:1px solid #b8860b}small{color:#666}</style></head><body>
 <h1>Prueba de ubicacion en el navegador</h1>

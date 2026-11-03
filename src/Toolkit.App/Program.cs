@@ -216,7 +216,7 @@ namespace Toolkit.App
         // Identidad de la app. La fuente unica es el .csproj (Authors/Company/Copyright/
         // Description): asi lo que ve el Explorador en Propiedades > Detalles y lo que
         // ve el usuario en Acerca de es siempre lo mismo.
-        public const string AppName = "Toolkit BPO";
+        public const string AppName = "Toolkit";
         /// <summary>Ficha del proyecto: guia de uso para soporte y descarga de la ultima version.</summary>
         public const string UpdatesUrl = "https://danielnvcd.site/proyectos/toolkit";
 

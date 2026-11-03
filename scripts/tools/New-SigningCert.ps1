@@ -3,7 +3,7 @@
     Crea el certificado de firma de codigo del toolkit (autofirmado, 5 anos).
 
 .DESCRIPTION
-    Genera un certificado "CN=danielnvcd, O=Toolkit BPO" en el almacen personal
+    Genera un certificado "CN=danielnvcd, O=Toolkit" en el almacen personal
     del usuario (Cert:\CurrentUser\My) y exporta su parte PUBLICA a
     build\cert\danielnvcd-codesign.cer, que es lo que se instala en los equipos
     destino (Install-SigningCert.ps1). La clave privada no sale de este equipo
@@ -23,7 +23,7 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$Subject = 'CN=danielnvcd, O=Toolkit BPO',
+    [string]$Subject = 'CN=danielnvcd, O=Toolkit',
     [int]$Years = 5,
     [switch]$ExportPfx,
     [switch]$Force
@@ -40,7 +40,7 @@ if ($existing -and -not $Force) {
     $cert = $existing | Sort-Object NotAfter -Descending | Select-Object -First 1
 } else {
     $cert = New-SelfSignedCertificate -Type CodeSigningCert -Subject $Subject `
-        -FriendlyName 'Toolkit BPO - firma de codigo (danielnvcd)' `
+        -FriendlyName 'Toolkit - firma de codigo (danielnvcd)' `
         -CertStoreLocation Cert:\CurrentUser\My -KeyExportPolicy Exportable `
         -KeyAlgorithm RSA -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears($Years)
     Write-Host "Certificado creado: $($cert.Subject)  huella $($cert.Thumbprint)  caduca $($cert.NotAfter.ToString('yyyy-MM-dd'))" -ForegroundColor Green
